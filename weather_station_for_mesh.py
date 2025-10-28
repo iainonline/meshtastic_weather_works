@@ -186,17 +186,17 @@ def main():
     logger.info("Waiting 3 seconds for sensor to stabilize...")
     time.sleep(3)
     
-    # Try up to 3 times to get initial reading
+    # Try up to 99 times to get initial reading
     test_temp, test_hum = None, None
-    for attempt in range(3):
-        logger.info(f"Sensor test attempt {attempt + 1}/3...")
+    for attempt in range(99):
+        logger.info(f"Sensor test attempt {attempt + 1}/99...")
         test_temp, test_hum = read_sensor()
         if test_temp is not None and test_hum is not None:
             test_temp_f = test_temp * (9 / 5) + 32
             logger.info(f"Sensor test successful: {test_temp_f:.1f}°F, {test_hum:.1f}%")
             break
         else:
-            if attempt < 2:
+            if attempt < 98:
                 logger.warning(f"Attempt {attempt + 1} failed, waiting 2 seconds...")
                 time.sleep(2)
     
