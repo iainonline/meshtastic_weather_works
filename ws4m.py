@@ -143,6 +143,29 @@ else:
 meshtastic_interface = None
 meshtastic_connected = False
 
+def get_node_stats():
+    """Get online and total node count from Meshtastic interface."""
+    global meshtastic_interface
+    
+    if not meshtastic_interface or not hasattr(meshtastic_interface, 'nodes'):
+        return None, None
+    
+    try:
+        total_nodes = len(meshtastic_interface.nodes)
+        online_nodes = 0
+        
+        # Count nodes seen recently (within last 15 minutes)
+        current_time = time.time()
+        for node_id, node_info in meshtastic_interface.nodes.items():
+            last_heard = node_info.get('lastHeard', 0)
+            if last_heard and (current_time - last_heard) < 900:  # 15 minutes
+                online_nodes += 1
+        
+        return online_nodes, total_nodes
+    except Exception as e:
+        logger.warning(f"Error getting node stats: {e}")
+        return None, None
+
 def init_meshtastic():
     """Initialize Meshtastic serial interface via USB."""
     global meshtastic_interface, meshtastic_connected
@@ -317,7 +340,12 @@ def main():
                 
                 # Send to Meshtastic with every reading (three lines for Heltec display)
                 timestamp = time.strftime("%m/%d %H:%M")
-                message = f"{timestamp}\nTemp: {temperature_f:.1f}°F\nHum : {humidity:.1f}%"
+                
+                # Get node stats
+                online_nodes, total_nodes = get_node_stats()
+                node_stats = f" ({online_nodes}/{total_nodes})" if online_nodes is not None else ""
+                
+                message = f"{timestamp}{node_stats}\nTemp: {temperature_f:.1f}°F\nHum : {humidity:.1f}%"
                 
                 # Try to reconnect if disconnected
                 if not meshtastic_connected:
@@ -339,8 +367,8 @@ def main():
                     logger.warning("* No sensor data available yet")
                 print("-" * 50)
             
-            # Wait 60 seconds between readings (one reading per minute)
-            time.sleep(60.0)
+            # Wait configured interval between readings
+            time.sleep(UPDATE_INTERVAL)
     
     except KeyboardInterrupt:
         logger.info("\n\nExiting program...")
