@@ -15,6 +15,10 @@ import logging
 from datetime import datetime
 import signal
 from contextlib import contextmanager
+import sys
+import select
+import termios
+import tty
 
 # Configure logging
 logging.basicConfig(
@@ -26,6 +30,48 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Global flag for graceful shutdown
+shutdown_requested = False
+
+# Keyboard input handler
+def check_for_quit():
+    """Check if 'q' key has been pressed."""
+    global shutdown_requested
+    if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
+        char = sys.stdin.read(1)
+        if char.lower() == 'q':
+            shutdown_requested = True
+            return True
+    return False
+
+def cleanup_and_exit():
+    """Cleanup resources and exit gracefully."""
+    global meshtastic_interface, dht_device
+    logger.info("\n" + "="*50)
+    logger.info("Shutting down gracefully...")
+    logger.info("="*50)
+    
+    # Close Meshtastic interface
+    if meshtastic_interface:
+        try:
+            logger.info("Closing Meshtastic interface...")
+            meshtastic_interface.close()
+            logger.info("✓ Meshtastic interface closed")
+        except Exception as e:
+            logger.warning(f"Error closing Meshtastic: {e}")
+    
+    # Clean up DHT sensor
+    if dht_device:
+        try:
+            logger.info("Cleaning up DHT22 sensor...")
+            dht_device.exit()
+            logger.info("✓ DHT22 sensor cleaned up")
+        except Exception as e:
+            logger.warning(f"Error cleaning up DHT22: {e}")
+    
+    logger.info("Goodbye!")
+    sys.exit(0)
 
 # Timeout handler for sensor reads
 class TimeoutException(Exception):
@@ -45,7 +91,30 @@ def time_limit(seconds):
 # Initialize the DHT22 sensor on GPIO4 (Pin 7)
 # For other GPIO pins, use: board.D18, board.D22, board.D23, etc.
 DHT_PIN = board.D4
-dht_device = adafruit_dht.DHT22(DHT_PIN)
+
+# Capture stderr to detect GPIO errors
+import sys
+import io
+old_stderr = sys.stderr
+sys.stderr = io.StringIO()
+
+try:
+    dht_device = adafruit_dht.DHT22(DHT_PIN)
+    error_output = sys.stderr.getvalue()
+finally:
+    sys.stderr = old_stderr
+
+# Check for GPIO initialization error
+if "Unable to set line" in error_output:
+    print("\n" + "="*60)
+    print("ERROR: GPIO4 is already in use or cannot be accessed!")
+    print("="*60)
+    print("\nThis usually means another process is using GPIO4.")
+    print("Please run this command to stop any existing instances:")
+    print("\n    sudo pkill -f weather_station\n")
+    print("Then try running the script again.")
+    print("="*60 + "\n")
+    sys.exit(1)
 
 # Load configuration
 config = configparser.ConfigParser()
@@ -179,7 +248,14 @@ def main():
     logger.info(f"Sensor connected to GPIO4 (Physical Pin 7)")
     logger.info(f"Meshtastic target node: {TARGET_NODE}")
     logger.info(f"Update interval: {UPDATE_INTERVAL} seconds")
-    logger.info("Press Ctrl+C to exit\n")
+    logger.info("Press 'q' to quit or Ctrl+C to exit\n")
+    
+    # Set terminal to non-blocking input mode
+    old_settings = termios.tcgetattr(sys.stdin)
+    try:
+        tty.setcbreak(sys.stdin.fileno())
+    except:
+        logger.warning("Could not set terminal to cbreak mode. 'q' to quit may not work.")
     
     # Read sensor first to verify it's working
     logger.info("Testing DHT22 sensor before initializing Meshtastic...")
@@ -215,6 +291,10 @@ def main():
     
     try:
         while True:
+            # Check for 'q' key press
+            if check_for_quit():
+                cleanup_and_exit()
+            
             logger.debug("Reading sensor...")
             # Read sensor data
             temperature_c, humidity = read_sensor()
@@ -268,23 +348,34 @@ def main():
     except Exception as e:
         logger.error(f"Unexpected error in main loop: {e}", exc_info=True)
     
+    except KeyboardInterrupt:
+        logger.info("\nKeyboard interrupt received (Ctrl+C)")
+        cleanup_and_exit()
+    
     finally:
-        # Clean up
-        logger.info("Cleaning up resources...")
+        # Restore terminal settings
         try:
-            dht_device.exit()
-            logger.info("DHT22 sensor closed")
-        except Exception as e:
-            logger.error(f"Error closing DHT22: {e}")
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+        except:
+            pass
         
-        if meshtastic_interface:
+        # Clean up if not already done
+        if not shutdown_requested:
+            logger.info("Cleaning up resources...")
             try:
-                meshtastic_interface.close()
-                logger.info("Meshtastic interface closed")
+                dht_device.exit()
+                logger.info("DHT22 sensor closed")
             except Exception as e:
-                logger.error(f"Error closing Meshtastic: {e}")
-        
-        logger.info("Sensor cleanup complete.")
+                logger.error(f"Error closing DHT22: {e}")
+            
+            if meshtastic_interface:
+                try:
+                    meshtastic_interface.close()
+                    logger.info("Meshtastic interface closed")
+                except Exception as e:
+                    logger.error(f"Error closing Meshtastic: {e}")
+            
+            logger.info("Sensor cleanup complete.")
 
 
 if __name__ == "__main__":
