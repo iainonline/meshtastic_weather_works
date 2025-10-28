@@ -183,12 +183,26 @@ def main():
     
     # Read sensor first to verify it's working
     logger.info("Testing DHT22 sensor before initializing Meshtastic...")
-    test_temp, test_hum = read_sensor()
-    if test_temp is not None and test_hum is not None:
-        test_temp_f = test_temp * (9 / 5) + 32
-        logger.info(f"Sensor test successful: {test_temp_f:.1f}°F, {test_hum:.1f}%")
-    else:
-        logger.warning("Sensor test failed, but continuing...")
+    logger.info("Waiting 3 seconds for sensor to stabilize...")
+    time.sleep(3)
+    
+    # Try up to 3 times to get initial reading
+    test_temp, test_hum = None, None
+    for attempt in range(3):
+        logger.info(f"Sensor test attempt {attempt + 1}/3...")
+        test_temp, test_hum = read_sensor()
+        if test_temp is not None and test_hum is not None:
+            test_temp_f = test_temp * (9 / 5) + 32
+            logger.info(f"Sensor test successful: {test_temp_f:.1f}°F, {test_hum:.1f}%")
+            break
+        else:
+            if attempt < 2:
+                logger.warning(f"Attempt {attempt + 1} failed, waiting 2 seconds...")
+                time.sleep(2)
+    
+    if test_temp is None:
+        logger.warning("All sensor test attempts failed, but continuing anyway...")
+        logger.warning("Check wiring: VCC->Pin1(3.3V), DATA->Pin7(GPIO4), GND->Pin6")
     
     # Initialize Meshtastic
     logger.info("Initializing Meshtastic...")
@@ -221,8 +235,9 @@ def main():
                 logger.info(f"Humidity: {humidity:.1f}%")
                 print("-" * 50)
                 
-                # Send to Meshtastic with every reading
-                message = f"Temp: {temperature_f:.1f}°F, Humidity: {humidity:.1f}%"
+                # Send to Meshtastic with every reading (three lines for Heltec display)
+                timestamp = time.strftime("%m/%d %H:%M")
+                message = f"{timestamp}\nTemp: {temperature_f:.1f}°F\nHum : {humidity:.1f}%"
                 
                 # Try to reconnect if disconnected
                 if not meshtastic_connected:
