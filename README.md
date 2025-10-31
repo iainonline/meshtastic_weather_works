@@ -4,17 +4,23 @@ Python project to read temperature and humidity data from a DHT22 sensor connect
 
 ## Features
 
-- Interactive menu system with auto-start option
-- Multi-node support - configure multiple target nodes
-- Smart routing - automatically sends to all other nodes when sender is in config
-- Real-time temperature (°F) and humidity (%) from DHT22 sensor
-- Signal strength (SNR) and hop count display
-- CSV logging with 7-day retention and node statistics
-- Reports menu to view nodes seen on the network
-- Auto-reconnect for USB Meshtastic device
-- Sensor reset functionality for improved reliability
-- Message confirmation display
-- Autostart on boot capability
+- **Interactive menu system** with auto-start option
+- **Multi-node support** - configure multiple target nodes
+- **Smart routing** - automatically sends to all other nodes when sender is in config
+- **Real-time temperature** (°F) and humidity (%) from DHT22 sensor
+- **Signal strength** (SNR) and hop count display
+- **Message delivery confirmation** - Uses ACK/NAK system to verify delivery
+- **Heltec V3 LED feedback**:
+  - 1 quick blink (0.5s) when message is sent
+  - 3 long blinks (1s each) when ACK received
+  - LED off when NAK/no response
+- **Compact status display** - Shows send time, ACK time, and SNR on sender
+- **CSV logging** with 7-day retention and node statistics
+- **Reports menu** to view nodes seen on the network
+- **Auto-reconnect** for USB Meshtastic device
+- **Sensor reset** functionality for improved reliability
+- **Customizable message templates** via config.ini
+- **Autostart on boot** capability
 
 ## Hardware Requirements
 
@@ -112,6 +118,31 @@ H: 25% 14:20:31 (6/114)
 - **Line 1**: Date, time, (online nodes/total nodes)
 - **Line 2**: Temperature in Fahrenheit, SNR (signal strength), HOP count
 - **Line 3**: Humidity percentage, military time, (online/total nodes)
+
+### Message Delivery Confirmation
+
+The system now uses Meshtastic's ACK/NAK system to verify message delivery:
+
+**Sender Display:**
+```
+============================================================
+📤 To: yang
+Sent: 16:24:27
+Ack : 16:24:29
+SNR : 7.0
+✓ yang
+============================================================
+```
+
+**LED Feedback (Heltec V3):**
+- **1 quick blink** (0.5s on) - Message sent/queued
+- **3 long blinks** (1s on, 0.5s off between) - ACK received from target
+- **LED off** - NAK received or no acknowledgment
+
+**Status Messages:**
+- `✓ yang` - ACK received, delivery confirmed
+- `✗ NAK from: yang` - Delivery failed
+- `⏳ Pending response from: yang` - Awaiting acknowledgment
 
 ### Customizing Message Templates
 

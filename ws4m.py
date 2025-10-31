@@ -10,6 +10,7 @@ import board
 import adafruit_dht
 import meshtastic
 import meshtastic.serial_interface
+import meshtastic.remote_hardware
 import configparser
 import logging
 from datetime import datetime, timedelta
@@ -23,6 +24,7 @@ import tty
 import csv
 import os
 import atexit
+import threading
 
 # Configure logging
 logging.basicConfig(
@@ -64,6 +66,9 @@ def cleanup_and_exit():
     logger.info("\n" + "="*50)
     logger.info("Shutting down gracefully...")
     logger.info("="*50)
+    
+    # Turn off LED
+    led_off()
     
     # Close Meshtastic interface
     if meshtastic_interface:
@@ -158,6 +163,146 @@ def cleanup_gpio_on_exit():
         pass
 
 atexit.register(cleanup_gpio_on_exit)
+
+# Heltec V3 LED control via Meshtastic remote hardware
+def led_on():
+    """Turn Heltec V3 internal LED on."""
+    if meshtastic_interface:
+        try:
+            meshtastic_interface.sendRemoteHardware(
+                gpio_pin=18,  # Heltec V3 LED pin
+                gpio_value=1,  # ON
+                destinationId=meshtastic_interface.localNode.nodeNum
+            )
+        except Exception as e:
+            logger.debug(f"LED on error: {e}")
+
+def led_off():
+    """Turn Heltec V3 internal LED off."""
+    if meshtastic_interface:
+        try:
+            meshtastic_interface.sendRemoteHardware(
+                gpio_pin=18,  # Heltec V3 LED pin
+                gpio_value=0,  # OFF
+                destinationId=meshtastic_interface.localNode.nodeNum
+            )
+        except Exception as e:
+            logger.debug(f"LED off error: {e}")
+
+def led_blink(times=1, duration=0.2):
+    """Blink Heltec V3 internal LED specified number of times."""
+    if meshtastic_interface:
+        try:
+            for i in range(times):
+                led_on()
+                time.sleep(duration)  # LED on time
+                led_off()
+                if i < times - 1:  # Don't add off delay after last blink
+                    time.sleep(0.5)  # 0.5 second off between blinks
+        except Exception as e:
+            logger.debug(f"LED blink error: {e}")
+
+# ACK/NAK tracking for message delivery confirmation
+class AckTracker:
+    """Track ACK/NAK responses for sent messages."""
+    
+    def __init__(self):
+        self.pending = {}  # {message_id: {'node_name': name, 'ack_received': False, 'nak_received': False}}
+        self.lock = threading.Lock()
+    
+    def register_message(self, message_id, node_name):
+        """Register a sent message awaiting acknowledgment."""
+        with self.lock:
+            self.pending[message_id] = {
+                'node_name': node_name,
+                'ack_received': False,
+                'nak_received': False,
+                'impl_ack_received': False,
+                'timestamp': time.time()
+            }
+            logger.debug(f"Registered message {message_id} for node {node_name}")
+    
+    def on_ack_nak(self, packet):
+        """Callback for ACK/NAK responses from Meshtastic."""
+        try:
+            # Handle both dict and protobuf packet formats
+            if hasattr(packet, 'get'):
+                # Dictionary format
+                request_id = packet.get('decoded', {}).get('requestId')
+                if not request_id:
+                    request_id = packet.get('id')
+                error_reason = packet.get('decoded', {}).get('routing', {}).get('errorReason', 'NONE')
+                from_node = packet.get('from')
+            else:
+                # Protobuf format
+                try:
+                    request_id = packet.decoded.request_id if hasattr(packet.decoded, 'request_id') else packet.id
+                    error_reason = packet.decoded.routing.error_reason if hasattr(packet.decoded, 'routing') else 'NONE'
+                    from_node = packet.from_id if hasattr(packet, 'from_id') else None
+                except AttributeError:
+                    logger.debug(f"Could not parse packet format: {packet}")
+                    return
+            
+            if not request_id or request_id not in self.pending:
+                logger.debug(f"ACK/NAK for unknown message ID: {request_id}")
+                return
+            
+            with self.lock:
+                msg_info = self.pending[request_id]
+                node_name = msg_info['node_name']
+                
+                # Check for NAK (error)
+                if error_reason != 'NONE':
+                    msg_info['nak_received'] = True
+                    logger.warning(f"✗ NAK received from {node_name}: {error_reason}")
+                else:
+                    # Check if it's an implicit ACK or real ACK
+                    local_num = meshtastic_interface.localNode.nodeNum if meshtastic_interface and hasattr(meshtastic_interface, 'localNode') else None
+                    if from_node == local_num:
+                        msg_info['impl_ack_received'] = True
+                        logger.info(f"⚠ Implicit ACK from {node_name} (packet queued, delivery not guaranteed)")
+                    else:
+                        msg_info['ack_received'] = True
+                        logger.info(f"✓ ACK received from {node_name}")
+                        # Blink LED 3 long blinks (1s on each) on successful ACK
+                        led_blink(times=3, duration=1.0)
+        
+        except Exception as e:
+            logger.error(f"Error in ACK/NAK callback: {e}")
+    
+    def get_status(self, message_id):
+        """Get the status of a message: 'ack', 'nak', 'impl_ack', or 'pending'."""
+        with self.lock:
+            if message_id not in self.pending:
+                return 'unknown'
+            msg_info = self.pending[message_id]
+            if msg_info['ack_received']:
+                return 'ack'
+            elif msg_info['nak_received']:
+                return 'nak'
+            elif msg_info['impl_ack_received']:
+                return 'impl_ack'
+            else:
+                return 'pending'
+    
+    def cleanup_old(self, timeout=60):
+        """Remove old pending messages that timed out."""
+        with self.lock:
+            current_time = time.time()
+            expired = [msg_id for msg_id, info in self.pending.items() 
+                      if current_time - info['timestamp'] > timeout]
+            for msg_id in expired:
+                node_name = self.pending[msg_id]['node_name']
+                logger.warning(f"Message {msg_id} to {node_name} timed out without ACK")
+                del self.pending[msg_id]
+    
+    def clear(self):
+        """Clear all pending messages."""
+        with self.lock:
+            self.pending.clear()
+
+# Global ACK tracker
+ack_tracker = AckTracker()
 
 # Load configuration
 config = configparser.ConfigParser()
@@ -837,15 +982,16 @@ def check_and_reconnect_meshtastic():
 
 def send_meshtastic_message(message):
     """
-    Send a private message to configured nodes. 
+    Send a private message to configured nodes with delivery confirmation.
     If connected device matches a node in config, sends to all other nodes.
     Otherwise, sends to the selected target node.
+    Returns dict: {'sent': count, 'acked': [], 'nacked': [], 'pending': []}
     """
     global meshtastic_interface, meshtastic_connected, my_node_id
     
     if not meshtastic_interface:
         logger.warning("Meshtastic interface not available")
-        return False
+        return {'sent': 0, 'acked': [], 'nacked': [], 'pending': []}
     
     try:
         # Determine which nodes to send to
@@ -871,21 +1017,74 @@ def send_meshtastic_message(message):
             logger.info(f"Sending to selected node: {SELECTED_NODE_NAME}")
             target_nodes = [(SELECTED_NODE_NAME, TARGET_NODE_INT)]
         
-        # Send messages to all target nodes
+        # Send messages to all target nodes with ACK request
         success_count = 0
+        message_ids = {}  # {message_id: node_name}
+        
         for name, node_id in target_nodes:
             try:
                 logger.info(f"Attempting to send message to {name} (ID: {node_id})...")
-                result = meshtastic_interface.sendText(message, destinationId=node_id)
-                logger.info(f"✓ Message sent to {name} (ID: {node_id})")
-                success_count += 1
+                
+                # Send with wantAck=True and register callback
+                packet = meshtastic_interface.sendText(
+                    message, 
+                    destinationId=node_id,
+                    wantAck=True,
+                    onResponse=ack_tracker.on_ack_nak
+                )
+                
+                # Single quick blink (0.5s on) when message is queued/sent
+                led_blink(times=1, duration=0.5)
+                
+                # Register this message for ACK tracking
+                # packet is a MeshPacket protobuf object, not a dict
+                if packet:
+                    try:
+                        message_id = packet.id
+                        ack_tracker.register_message(message_id, name)
+                        message_ids[message_id] = name
+                        logger.info(f"✓ Message queued for {name} (ID: {node_id}, msg_id: {message_id})")
+                        success_count += 1
+                    except AttributeError:
+                        # Fallback if packet doesn't have id attribute
+                        logger.info(f"✓ Message queued for {name} (ID: {node_id})")
+                        success_count += 1
+                else:
+                    logger.info(f"✓ Message queued for {name} (ID: {node_id})")
+                    success_count += 1
+                    
             except Exception as e:
                 logger.error(f"Failed to send to {name} (ID: {node_id}): {e}")
         
         logger.info(f"Message content: {message}")
-        logger.info(f"Successfully sent to {success_count}/{len(target_nodes)} nodes")
+        logger.info(f"Successfully queued to {success_count}/{len(target_nodes)} nodes")
         
-        return success_count > 0
+        # Wait briefly for ACKs (non-blocking approach)
+        if message_ids:
+            time.sleep(0.5)  # Brief wait for immediate ACKs
+            
+            # Check status of each message
+            acked = []
+            nacked = []
+            pending = []
+            
+            for msg_id, node_name in message_ids.items():
+                status = ack_tracker.get_status(msg_id)
+                if status == 'ack':
+                    acked.append(node_name)
+                elif status == 'nak':
+                    nacked.append(node_name)
+                else:
+                    pending.append(node_name)
+            
+            return {
+                'sent': success_count,
+                'acked': acked,
+                'nacked': nacked,
+                'pending': pending
+            }
+        
+        return {'sent': success_count, 'acked': [], 'nacked': [], 'pending': []}
         
     except Exception as e:
         logger.error(f"Error sending message (USB may be disconnected): {e}")
@@ -898,7 +1097,7 @@ def send_meshtastic_message(message):
             pass
         meshtastic_interface = None
         logger.warning("Meshtastic marked as disconnected. Will retry on next send.")
-        return False
+        return {'sent': 0, 'acked': [], 'nacked': [], 'pending': []}
 
 def read_sensor():
     """
@@ -1129,7 +1328,19 @@ def run_weather_station():
                 online_nodes, total_nodes = get_node_stats()
                 
                 # Get target node info (signal strength and hops)
-                snr, hops = get_target_node_info(TARGET_NODE_INT)
+                # Determine the actual target we're sending to
+                if my_node_id and my_node_id in NODES.values():
+                    # We're one of the configured nodes, get info for another node
+                    # Find first other node for signal info
+                    target_for_signal = None
+                    for name, node_id in NODES.items():
+                        if node_id != my_node_id:
+                            target_for_signal = node_id
+                            break
+                    snr, hops = get_target_node_info(target_for_signal) if target_for_signal else (None, None)
+                else:
+                    # Use configured target node
+                    snr, hops = get_target_node_info(TARGET_NODE_INT)
                 
                 # Format message using template
                 message = format_message(temperature_f, humidity, online_nodes, total_nodes, snr, hops)
@@ -1143,26 +1354,70 @@ def run_weather_station():
                 
                 # Send message if connected
                 if meshtastic_connected:
-                    success = send_meshtastic_message(message)
+                    # Record send time
+                    send_time = time.strftime("%H:%M:%S")
                     
-                    if success:
-                        # Display confirmation on terminal
-                        send_time = time.strftime("%H:%M:%S")
+                    result = send_meshtastic_message(message)
+                    
+                    if result['sent'] > 0:
                         # Determine recipient(s)
                         if my_node_id and my_node_id in NODES.values():
                             my_node_name = next((name for name, node_id in NODES.items() if node_id == my_node_id), None)
                             if my_node_name:
                                 recipients = [name for name, node_id in NODES.items() if node_id != my_node_id]
-                                print(f"✓ Message sent to {', '.join(recipients)} at {send_time}")
+                                recipient_text = ', '.join(recipients)
                             else:
-                                print(f"✓ Message sent to {SELECTED_NODE_NAME} at {send_time}")
+                                recipient_text = SELECTED_NODE_NAME
                         else:
-                            print(f"✓ Message sent to {SELECTED_NODE_NAME} at {send_time}")
+                            recipient_text = SELECTED_NODE_NAME
+                        
+                        # Display timing and status information
+                        print("\n" + "=" * 60)
+                        print(f"📤 To: {recipient_text}")
+                        print(f"Sent: {send_time}")
+                        
+                        # Wait briefly for ACKs
+                        time.sleep(2)
+                        
+                        # Record ACK time and display status
+                        ack_time = time.strftime("%H:%M:%S")
+                        
+                        if result['acked']:
+                            for node_name in result['acked']:
+                                # Get SNR for this node
+                                node_id = NODES.get(node_name)
+                                if node_id:
+                                    snr, _ = get_target_node_info(node_id)
+                                    snr_display = f"{snr:.1f}" if snr is not None else "--"
+                                else:
+                                    snr_display = "--"
+                                
+                                print(f"Ack : {ack_time}")
+                                print(f"SNR : {snr_display}")
+                                print(f"✓ {node_name}")
+                            # LED already blinked 3 times in callback
+                        
+                        if result['nacked']:
+                            print(f"✗ NAK from: {', '.join(result['nacked'])}")
+                            led_off()  # Turn off LED on failure
+                        
+                        if result['pending']:
+                            print(f"⏳ Pending response from: {', '.join(result['pending'])}")
+                        
+                        if not result['acked'] and not result['nacked'] and not result['pending']:
+                            led_off()
+                            print("⚠ No acknowledgments received")
+                        
+                        print("=" * 60)
+                    else:
+                        # No messages sent successfully
+                        led_off()
                     
                     # Log node data after sending message
                     log_node_data()
                 else:
                     logger.warning("Meshtastic not available. Skipping message send.")
+                    led_off()
                 
                 # Auto-save CSV log every AUTO_SAVE_INTERVAL seconds
                 if time.time() - last_csv_save >= AUTO_SAVE_INTERVAL:
