@@ -210,11 +210,13 @@ def load_config():
     
     # Load message templates
     if config.has_section('message_templates'):
-        MESSAGE_TEMPLATES = {name: template for name, template in config.items('message_templates')}
+        # Decode escape sequences like \n
+        MESSAGE_TEMPLATES = {name: template.encode().decode('unicode_escape') 
+                            for name, template in config.items('message_templates')}
     else:
         # Default template if section missing
         MESSAGE_TEMPLATES = {
-            'template1': '{date} {time} ({online}/{total})\\nT: {temp}F {snr} snr/{hops} hop\\nH: {humidity}% {time_detail}'
+            'template1': '{date} {time} ({online}/{total})\nT: {temp}F {snr} snr/{hops} hop\nH: {humidity}% {time_detail}'
         }
     
     # Set target node

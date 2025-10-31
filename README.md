@@ -101,17 +101,51 @@ If no selection is made within 15 seconds, option 1 auto-starts.
 
 ## Message Format
 
-Messages are formatted in 3 lines optimized for Meshtastic displays:
+Messages use customizable templates defined in `config.ini`. The default template (template1) formats messages in 3 lines optimized for Meshtastic displays:
 
 ```
 10/31 14:20 (6/114)
-T: 83F 6.0_snr/0_hop
-H: 25% 14:20:31
+T: 83F 6.2 SNR 0 HOP
+H: 25% 14:20:31 (6/114)
 ```
 
 - **Line 1**: Date, time, (online nodes/total nodes)
-- **Line 2**: Temperature in Fahrenheit, SNR (signal strength), hop count
-- **Line 3**: Humidity percentage, military time
+- **Line 2**: Temperature in Fahrenheit, SNR (signal strength), HOP count
+- **Line 3**: Humidity percentage, military time, (online/total nodes)
+
+### Customizing Message Templates
+
+Edit `config.ini` to customize the message format or switch between templates:
+
+```ini
+[settings]
+message_template = template1  # Choose: template1, template2, or template3
+
+[message_templates]
+# Create your own templates using these placeholders:
+# {date}, {time}, {time_detail}, {online}, {total}, {temp}, {humidity}, {snr}, {hops}
+# Use \n for line breaks and %% for percent signs
+
+template1 = {date} {time} ({online}/{total})\nT: {temp}F {snr} SNR {hops} HOP\nH: {humidity}%% {time_detail} ({online}/{total})
+
+# Add your own custom templates here
+```
+
+**Available Placeholders:**
+- `{date}` - MM/DD format
+- `{time}` - HH:MM format  
+- `{time_detail}` - HH:MM:SS format
+- `{online}` - Online node count
+- `{total}` - Total node count
+- `{temp}` - Temperature (integer)
+- `{humidity}` - Humidity (integer)
+- `{snr}` - Signal strength (1 decimal)
+- `{hops}` - Hop count
+
+Three templates are included:
+- **template1** (default): 3-line compact format with signal info on all lines
+- **template2**: 4-line detailed format
+- **template3**: 2-line simple format
 
 ## Autostart Setup
 
