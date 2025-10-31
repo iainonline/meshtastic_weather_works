@@ -202,6 +202,30 @@ def led_blink(times=1, duration=0.2):
         except Exception as e:
             logger.debug(f"LED blink error: {e}")
 
+def led_pulse_while_waiting(duration, check_callback):
+    """Pulse LED slowly while waiting, stop when callback returns True."""
+    if meshtastic_interface:
+        try:
+            start_time = time.time()
+            while time.time() - start_time < duration:
+                if check_callback():
+                    # ACK received, stop pulsing
+                    led_off()
+                    return True
+                # Pulse pattern: on for 0.3s, off for 0.7s
+                led_on()
+                time.sleep(0.3)
+                led_off()
+                time.sleep(0.7)
+            # Timeout reached
+            led_off()
+            return False
+        except Exception as e:
+            logger.debug(f"LED pulse error: {e}")
+            led_off()
+            return False
+    return False
+
 # ACK/NAK tracking for message delivery confirmation
 class AckTracker:
     """Track ACK/NAK responses for sent messages."""
@@ -430,10 +454,16 @@ def show_main_menu():
     
     # Determine connected (sender) node info
     sender_info = "Ready to Connect"
+    receiver_info = f"{SELECTED_NODE_NAME} (ID: {TARGET_NODE_INT})"
+    
     if my_node_id:
         sender_name = next((name for name, node_id in NODES.items() if node_id == my_node_id), None)
         if sender_name:
             sender_info = f"{sender_name} (ID: {my_node_id})"
+            # If sender is in config, show all other nodes as receivers
+            other_nodes = [f"{name} (ID: {node_id})" for name, node_id in NODES.items() if node_id != my_node_id]
+            if other_nodes:
+                receiver_info = ", ".join(other_nodes)
         else:
             sender_info = f"Unknown (ID: {my_node_id})"
     
@@ -441,7 +471,7 @@ def show_main_menu():
     print("MESHTASTIC WEATHER STATION - MAIN MENU")
     print("="*60)
     print(f"\nConnected Node (Sender): {sender_info}")
-    print(f"Target Node (Receiver):  {SELECTED_NODE_NAME} (ID: {TARGET_NODE_INT})")
+    print(f"Target Node (Receiver):  {receiver_info}")
     print("\n" + "-"*60)
     print("\n1. Start Sending Messages")
     print("2. Stop Sending Messages")
@@ -463,10 +493,16 @@ def show_main_menu_with_timeout():
     
     # Determine connected (sender) node info
     sender_info = "Ready to Connect"
+    receiver_info = f"{SELECTED_NODE_NAME} (ID: {TARGET_NODE_INT})"
+    
     if my_node_id:
         sender_name = next((name for name, node_id in NODES.items() if node_id == my_node_id), None)
         if sender_name:
             sender_info = f"{sender_name} (ID: {my_node_id})"
+            # If sender is in config, show all other nodes as receivers
+            other_nodes = [f"{name} (ID: {node_id})" for name, node_id in NODES.items() if node_id != my_node_id]
+            if other_nodes:
+                receiver_info = ", ".join(other_nodes)
         else:
             sender_info = f"Unknown (ID: {my_node_id})"
     
@@ -474,7 +510,7 @@ def show_main_menu_with_timeout():
     print("MESHTASTIC WEATHER STATION - MAIN MENU")
     print("="*60)
     print(f"\nConnected Node (Sender): {sender_info}")
-    print(f"Target Node (Receiver):  {SELECTED_NODE_NAME} (ID: {TARGET_NODE_INT})")
+    print(f"Target Node (Receiver):  {receiver_info}")
     print("\n" + "-"*60)
     print("\n1. Start Sending Messages")
     print("2. Stop Sending Messages")
@@ -991,7 +1027,7 @@ def send_meshtastic_message(message):
     
     if not meshtastic_interface:
         logger.warning("Meshtastic interface not available")
-        return {'sent': 0, 'acked': [], 'nacked': [], 'pending': []}
+        return {'sent': 0, 'acked': [], 'nacked': [], 'pending': [], 'message_ids': {}}
     
     try:
         # Determine which nodes to send to
@@ -1081,10 +1117,11 @@ def send_meshtastic_message(message):
                 'sent': success_count,
                 'acked': acked,
                 'nacked': nacked,
-                'pending': pending
+                'pending': pending,
+                'message_ids': message_ids  # Include message IDs for tracking
             }
         
-        return {'sent': success_count, 'acked': [], 'nacked': [], 'pending': []}
+        return {'sent': success_count, 'acked': [], 'nacked': [], 'pending': [], 'message_ids': {}}
         
     except Exception as e:
         logger.error(f"Error sending message (USB may be disconnected): {e}")
@@ -1376,14 +1413,40 @@ def run_weather_station():
                         print(f"📤 To: {recipient_text}")
                         print(f"Sent: {send_time}")
                         
-                        # Wait briefly for ACKs
-                        time.sleep(2)
+                        # Pulse LED while waiting for ACKs (up to 5 seconds)
+                        # Create a callback to check if any ACKs received
+                        current_msg_ids = result.get('message_ids', {})
+                        
+                        def check_ack_received():
+                            # Re-check status during pulse - only for current batch
+                            for msg_id in current_msg_ids.keys():
+                                status = ack_tracker.get_status(msg_id)
+                                if status == 'ack':
+                                    return True
+                            return False
+                        
+                        # Pulse for up to 5 seconds or until ACK received
+                        ack_during_pulse = led_pulse_while_waiting(5.0, check_ack_received)
                         
                         # Record ACK time and display status
                         ack_time = time.strftime("%H:%M:%S")
                         
-                        if result['acked']:
-                            for node_name in result['acked']:
+                        # Re-check final status - only for messages sent in this batch
+                        acked = []
+                        nacked = []
+                        pending = []
+                        
+                        for msg_id, node_name in current_msg_ids.items():
+                            status = ack_tracker.get_status(msg_id)
+                            if status == 'ack':
+                                acked.append(node_name)
+                            elif status == 'nak':
+                                nacked.append(node_name)
+                            elif status == 'pending':
+                                pending.append(node_name)
+                        
+                        if acked:
+                            for node_name in acked:
                                 # Get SNR for this node
                                 node_id = NODES.get(node_name)
                                 if node_id:
@@ -1397,14 +1460,16 @@ def run_weather_station():
                                 print(f"✓ {node_name}")
                             # LED already blinked 3 times in callback
                         
-                        if result['nacked']:
-                            print(f"✗ NAK from: {', '.join(result['nacked'])}")
-                            led_off()  # Turn off LED on failure
+                        if nacked:
+                            print(f"✗ NAK from: {', '.join(nacked)}")
+                            # Fast blink 5 times to indicate failure
+                            led_blink(times=5, duration=0.1)
                         
-                        if result['pending']:
-                            print(f"⏳ Pending response from: {', '.join(result['pending'])}")
+                        if pending:
+                            print(f"⏳ Pending response from: {', '.join(pending)}")
+                            led_off()
                         
-                        if not result['acked'] and not result['nacked'] and not result['pending']:
+                        if not acked and not nacked and not pending:
                             led_off()
                             print("⚠ No acknowledgments received")
                         
