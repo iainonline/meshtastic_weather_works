@@ -1,0 +1,19 @@
+[Unit]
+Description=Meshtastic Weather Station
+After=network.target
+
+[Service]
+Type=simple
+User=iain
+WorkingDirectory=/home/iain/WS
+ExecStart=/usr/bin/python3 /home/iain/WS/ws4m.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Environment variables if needed
+Environment="PYTHONUNBUFFERED=1"
+
+[Install]
+WantedBy=multi-user.target
