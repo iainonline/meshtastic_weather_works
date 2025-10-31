@@ -328,6 +328,7 @@ def show_main_menu_with_timeout():
         tty.setcbreak(sys.stdin.fileno())
         start_time = time.time()
         user_input = ""
+        last_remaining = 15
         
         while time.time() - start_time < 15:
             remaining = int(15 - (time.time() - start_time))
@@ -343,9 +344,10 @@ def show_main_menu_with_timeout():
                     user_input = char
                     print(char, flush=True)
             
-            # Update countdown every second
-            if remaining != int(15 - (start_time - start_time)):
-                print(f"\rAuto-starting option 1 in {remaining} seconds...  \nSelect option (1-6) or wait: {user_input}", end='', flush=True)
+            # Update countdown every second - print on same line
+            if remaining != last_remaining:
+                last_remaining = remaining
+                print(f"\rAuto-starting option 1 in {remaining} seconds...  Select option (1-6) or wait: {user_input}", end='', flush=True)
         
         # Timeout - auto-select option 1
         print("\n\n✓ Auto-starting option 1...")
