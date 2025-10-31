@@ -173,17 +173,22 @@ USB_RECONNECT_INTERVAL = 10
 LOG_FILE = 'meshtastic_log.csv'
 AUTO_SAVE_INTERVAL = 300
 RETENTION_DAYS = 7
+MESSAGE_TEMPLATE = 'template1'
+MESSAGE_TEMPLATES = {}
 
 def load_config():
     """Load configuration from config.ini file."""
     global NODES, SELECTED_NODE_NAME, TARGET_NODE_INT, UPDATE_INTERVAL
     global AUTO_BOOT_TIMEOUT, USB_RECONNECT_INTERVAL, LOG_FILE, AUTO_SAVE_INTERVAL, RETENTION_DAYS
+    global MESSAGE_TEMPLATE, MESSAGE_TEMPLATES
     
     if not config.read(config_file):
         logger.error(f"Failed to read {config_file}. Using defaults.")
         NODES = {'default': 12345678}
         SELECTED_NODE_NAME = 'default'
         TARGET_NODE_INT = 12345678
+        MESSAGE_TEMPLATE = 'template1'
+        MESSAGE_TEMPLATES = {}
         return
     
     # Load nodes
@@ -198,8 +203,19 @@ def load_config():
         UPDATE_INTERVAL = config.getint('settings', 'update_interval', fallback=60)
         AUTO_BOOT_TIMEOUT = config.getint('settings', 'auto_boot_timeout', fallback=10)
         USB_RECONNECT_INTERVAL = config.getint('settings', 'usb_reconnect_interval', fallback=10)
+        MESSAGE_TEMPLATE = config.get('settings', 'message_template', fallback='template1')
     else:
         SELECTED_NODE_NAME = 'yang'
+        MESSAGE_TEMPLATE = 'template1'
+    
+    # Load message templates
+    if config.has_section('message_templates'):
+        MESSAGE_TEMPLATES = {name: template for name, template in config.items('message_templates')}
+    else:
+        # Default template if section missing
+        MESSAGE_TEMPLATES = {
+            'template1': '{date} {time} ({online}/{total})\\nT: {temp}F {snr} snr/{hops} hop\\nH: {humidity}% {time_detail}'
+        }
     
     # Set target node
     TARGET_NODE_INT = NODES.get(SELECTED_NODE_NAME, list(NODES.values())[0])
@@ -213,6 +229,7 @@ def load_config():
     logger.info(f"Loaded configuration from {config_file}")
     logger.info(f"Available nodes: {NODES}")
     logger.info(f"Selected node: {SELECTED_NODE_NAME} = {TARGET_NODE_INT}")
+    logger.info(f"Message template: {MESSAGE_TEMPLATE}")
 
 def save_config():
     """Save current configuration to config.ini file."""
@@ -514,36 +531,33 @@ def view_sample_message():
     print("SAMPLE MESSAGE PREVIEW")
     print("="*60)
     
-    # Get current timestamp
-    timestamp = time.strftime("%m/%d %H:%M")
-    time_detail = time.strftime("%H:%M:%S")
-    
-    # Get node stats
+    # Get node stats (real or example)
     online_nodes, total_nodes = get_node_stats()
-    node_stats = f" ({online_nodes}/{total_nodes})" if online_nodes is not None else " (0/0)"
+    if online_nodes is None:
+        online_nodes, total_nodes = 5, 114  # Example values
     
-    # Get target node info (signal strength and hops)
+    # Get target node info (real or example)
     snr, hops = get_target_node_info(TARGET_NODE_INT)
-    if snr is not None and hops is not None:
-        signal_info = f" {snr:.1f}_snr/{hops}_hop"
-    else:
-        signal_info = " -8.0_snr/2_hop"  # Example values
+    if snr is None:
+        snr, hops = -8.0, 2  # Example values
     
     # Sample temperature and humidity
     temperature_f = 81.0
     humidity = 29.0
     
-    # Build sample message
-    message = f"{timestamp}{node_stats}\nT: {temperature_f:.0f}F{signal_info}\nH: {humidity:.0f}% {time_detail}"
+    # Build sample message using template
+    message = format_message(temperature_f, humidity, online_nodes, total_nodes, snr, hops)
     
     print("\nSample message that will be sent:")
     print("\n" + "-"*60)
     print(message)
     print("-"*60)
-    print("\nFormat:")
-    print("  Line 1: MM/DD HH:MM (online/total)")
-    print("  Line 2: T: tempF SNR_snr/hops_hop")
-    print("  Line 3: H: humidity% HH:MM:SS")
+    print(f"\nUsing template: {MESSAGE_TEMPLATE}")
+    print("\nAvailable templates:")
+    for template_name in MESSAGE_TEMPLATES.keys():
+        indicator = " (current)" if template_name == MESSAGE_TEMPLATE else ""
+        print(f"  - {template_name}{indicator}")
+    print("\nTo change template, edit config.ini [settings] message_template")
     print("="*60)
     input("\nPress Enter to continue...")
 
@@ -738,6 +752,50 @@ def get_target_node_info(target_node_id):
     except Exception as e:
         logger.warning(f"Error getting target node info: {e}")
         return None, None
+
+def format_message(temperature_f, humidity, online_nodes=None, total_nodes=None, snr=None, hops=None):
+    """Format message using the configured template."""
+    global MESSAGE_TEMPLATE, MESSAGE_TEMPLATES
+    
+    # Get current timestamps
+    date = time.strftime("%m/%d")
+    time_now = time.strftime("%H:%M")
+    time_detail = time.strftime("%H:%M:%S")
+    
+    # Format node stats
+    if online_nodes is not None and total_nodes is not None:
+        online = online_nodes
+        total = total_nodes
+    else:
+        online = 0
+        total = 0
+    
+    # Format signal info
+    if snr is not None and hops is not None:
+        snr_val = f"{snr:.1f}"
+        hops_val = str(hops)
+    else:
+        snr_val = "--"
+        hops_val = "--"
+    
+    # Get the template
+    template = MESSAGE_TEMPLATES.get(MESSAGE_TEMPLATE, MESSAGE_TEMPLATES.get('template1', 
+        '{date} {time} ({online}/{total})\\nT: {temp}F {snr} snr/{hops} hop\\nH: {humidity}% {time_detail}'))
+    
+    # Format the message
+    message = template.format(
+        date=date,
+        time=time_now,
+        time_detail=time_detail,
+        online=online,
+        total=total,
+        temp=int(temperature_f),
+        humidity=int(humidity),
+        snr=snr_val,
+        hops=hops_val
+    )
+    
+    return message
 
 def init_meshtastic():
     """Initialize Meshtastic serial interface via USB."""
@@ -1065,29 +1123,14 @@ def run_weather_station():
                 logger.info(f"Humidity: {humidity:.1f}%")
                 print("-" * 50)
                 
-                # Send to Meshtastic with every reading (four lines for Heltec display)
-                timestamp = time.strftime("%m/%d %H:%M")
-                time_detail = time.strftime("%H:%M:%S")
-                
                 # Get node stats
                 online_nodes, total_nodes = get_node_stats()
-                if online_nodes is not None and total_nodes is not None:
-                    node_stats = f" ({online_nodes}/{total_nodes})"
-                    logger.debug(f"Node stats: {online_nodes} online out of {total_nodes} total")
-                else:
-                    node_stats = ""
-                    logger.debug("Node stats not available - meshtastic_interface.nodes may be empty")
                 
                 # Get target node info (signal strength and hops)
                 snr, hops = get_target_node_info(TARGET_NODE_INT)
-                if snr is not None and hops is not None:
-                    signal_info = f" {snr:.1f}_snr/{hops}_hop"
-                else:
-                    # Use placeholder when target node info not available
-                    signal_info = " --/--"
-                    logger.debug(f"Target node {TARGET_NODE_INT} signal info not available")
                 
-                message = f"{timestamp}{node_stats}\nT: {temperature_f:.0f}F{signal_info}\nH: {humidity:.0f}% {time_detail}"
+                # Format message using template
+                message = format_message(temperature_f, humidity, online_nodes, total_nodes, snr, hops)
                 
                 # Try to reconnect if disconnected (check interval)
                 if not meshtastic_connected:
