@@ -67,9 +67,6 @@ def cleanup_and_exit():
     logger.info("Shutting down gracefully...")
     logger.info("="*50)
     
-    # Turn off LED
-    led_off()
-    
     # Close Meshtastic interface
     if meshtastic_interface:
         try:
@@ -164,68 +161,6 @@ def cleanup_gpio_on_exit():
 
 atexit.register(cleanup_gpio_on_exit)
 
-# Heltec V3 LED control via Meshtastic remote hardware
-def led_on():
-    """Turn Heltec V3 internal LED on."""
-    if meshtastic_interface:
-        try:
-            meshtastic_interface.sendRemoteHardware(
-                gpio_pin=18,  # Heltec V3 LED pin
-                gpio_value=1,  # ON
-                destinationId=meshtastic_interface.localNode.nodeNum
-            )
-        except Exception as e:
-            logger.debug(f"LED on error: {e}")
-
-def led_off():
-    """Turn Heltec V3 internal LED off."""
-    if meshtastic_interface:
-        try:
-            meshtastic_interface.sendRemoteHardware(
-                gpio_pin=18,  # Heltec V3 LED pin
-                gpio_value=0,  # OFF
-                destinationId=meshtastic_interface.localNode.nodeNum
-            )
-        except Exception as e:
-            logger.debug(f"LED off error: {e}")
-
-def led_blink(times=1, duration=0.2):
-    """Blink Heltec V3 internal LED specified number of times."""
-    if meshtastic_interface:
-        try:
-            for i in range(times):
-                led_on()
-                time.sleep(duration)  # LED on time
-                led_off()
-                if i < times - 1:  # Don't add off delay after last blink
-                    time.sleep(0.5)  # 0.5 second off between blinks
-        except Exception as e:
-            logger.debug(f"LED blink error: {e}")
-
-def led_pulse_while_waiting(duration, check_callback):
-    """Pulse LED slowly while waiting, stop when callback returns True."""
-    if meshtastic_interface:
-        try:
-            start_time = time.time()
-            while time.time() - start_time < duration:
-                if check_callback():
-                    # ACK received, stop pulsing
-                    led_off()
-                    return True
-                # Pulse pattern: on for 0.3s, off for 0.7s
-                led_on()
-                time.sleep(0.3)
-                led_off()
-                time.sleep(0.7)
-            # Timeout reached
-            led_off()
-            return False
-        except Exception as e:
-            logger.debug(f"LED pulse error: {e}")
-            led_off()
-            return False
-    return False
-
 # ACK/NAK tracking for message delivery confirmation
 class AckTracker:
     """Track ACK/NAK responses for sent messages."""
@@ -291,8 +226,6 @@ class AckTracker:
                         ack_time = time.strftime("%H:%M:%S")
                         logger.info(f"✓ ACK received from {node_name}")
                         print(f"\n✓ ACK received from {node_name} at {ack_time}")
-                        # Blink LED 3 long blinks (1s on each) on successful ACK
-                        led_blink(times=3, duration=1.0)
         
         except Exception as e:
             logger.error(f"Error in ACK/NAK callback: {e}")
@@ -1086,9 +1019,6 @@ def send_meshtastic_message(message):
                         wantAck=False
                     )
                 
-                # Single quick blink (0.5s on) when message is queued/sent
-                led_blink(times=1, duration=0.5)
-                
                 # Register this message for ACK tracking only if ACK requested
                 # packet is a MeshPacket protobuf object, not a dict
                 if packet and WANT_ACK:
@@ -1416,7 +1346,8 @@ def run_weather_station():
                                     return True
                             return False
                         
-                        ack_during_pulse = led_pulse_while_waiting(5.0, check_ack_received)
+                        # Wait 5 seconds for ACK
+                        time.sleep(5)
                         ack_time = time.strftime("%H:%M:%S")
                         
                         # Check final status
@@ -1448,7 +1379,6 @@ def run_weather_station():
                         
                         if nacked:
                             print(f"✗ NAK from: {', '.join(nacked)}")
-                            led_blink(times=5, duration=0.1)
                         
                         if pending:
                             print(f"⏳ Still pending from: {', '.join(pending)}")
@@ -1457,7 +1387,6 @@ def run_weather_station():
                             pending_message = retry_message
                             pending_recipients = pending
                             logger.info(f"Will retry again in {ACK_RETRY_TIMEOUT} seconds at {time.strftime('%H:%M:%S', time.localtime(pending_retry_time))}")
-                            led_off()
                         else:
                             # All resolved
                             pending_retry_time = None
@@ -1545,8 +1474,8 @@ def run_weather_station():
                                         return True
                                 return False
                             
-                            # Pulse for up to 5 seconds or until ACK received
-                            ack_during_pulse = led_pulse_while_waiting(5.0, check_ack_received)
+                            # Wait for up to 5 seconds for ACK
+                            time.sleep(5)
                             
                             # Record ACK time and display status
                             ack_time = time.strftime("%H:%M:%S")
@@ -1578,12 +1507,9 @@ def run_weather_station():
                                     print(f"Ack : {ack_time}")
                                     print(f"SNR : {snr_display}")
                                     print(f"✓ {node_name}")
-                                # LED already blinked 3 times in callback
                             
                             if nacked:
                                 print(f"✗ NAK from: {', '.join(nacked)}")
-                                # Fast blink 5 times to indicate failure
-                                led_blink(times=5, duration=0.1)
                             
                             if pending:
                                 print(f"⏳ Pending response from: {', '.join(pending)}")
@@ -1592,10 +1518,8 @@ def run_weather_station():
                                 pending_message = message
                                 pending_recipients = pending
                                 logger.info(f"Will retry in {ACK_RETRY_TIMEOUT} seconds at {time.strftime('%H:%M:%S', time.localtime(pending_retry_time))}")
-                                led_off()
                             
                             if not acked and not nacked and not pending:
-                                led_off()
                                 print("⚠ No acknowledgments received")
                                 # Clear any pending retry since nothing is pending
                                 pending_retry_time = None
@@ -1610,15 +1534,11 @@ def run_weather_station():
                         else:
                             # ACK disabled - just show message sent
                             print(f"✓ Message sent")
-                            led_off()
                         
                         print("=" * 60)
                         
                         # Log node data after sending message
                         log_node_data()
-                    else:
-                        # No messages sent successfully
-                        led_off()
 
                 
                 # Auto-save CSV log every AUTO_SAVE_INTERVAL seconds
