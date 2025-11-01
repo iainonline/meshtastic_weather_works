@@ -1474,10 +1474,9 @@ def run_weather_station():
                 last_temperature_f = temperature_f
                 last_humidity = humidity
                 
-                # Display readings
-                logger.info(f"Temperature: {temperature_f:.1f}°F")
-                logger.info(f"Humidity: {humidity:.1f}%")
-                print("-" * 50)
+                # Only display readings when not just counting down (debug level logging instead)
+                logger.debug(f"Temperature: {temperature_f:.1f}°F")
+                logger.debug(f"Humidity: {humidity:.1f}%")
                 
                 # Get node stats
                 online_nodes, total_nodes = get_node_stats()
@@ -1628,13 +1627,12 @@ def run_weather_station():
                     cleanup_old_logs()
                     
             else:
-                # Display * when sensor fails, show last known reading
+                # Display * when sensor fails, show last known reading (only log, don't print)
                 if last_temperature_f is not None and last_humidity is not None:
-                    logger.warning(f"* Temperature: {last_temperature_f:.1f}°F (last reading)")
-                    logger.warning(f"* Humidity: {last_humidity:.1f}% (last reading)")
+                    logger.debug(f"* Temperature: {last_temperature_f:.1f}°F (last reading)")
+                    logger.debug(f"* Humidity: {last_humidity:.1f}% (last reading)")
                 else:
-                    logger.warning("* No sensor data available yet")
-                print("-" * 50)
+                    logger.debug("* No sensor data available yet")
             
             # Calculate seconds until next message (next whole minute)
             seconds_until_next = 60 - current_second
@@ -1642,7 +1640,11 @@ def run_weather_station():
                 seconds_until_next = 60  # Just sent, next is in 60 seconds
             
             # Display countdown on one line (overwrite with \r)
-            print(f"\rNext message in {seconds_until_next} seconds...  ", end='', flush=True)
+            # Show temperature and humidity in the countdown
+            if last_temperature_f is not None and last_humidity is not None:
+                print(f"\rT: {last_temperature_f:.1f}°F  H: {last_humidity:.1f}%  Next message in {seconds_until_next}s    ", end='', flush=True)
+            else:
+                print(f"\rNext message in {seconds_until_next} seconds...  ", end='', flush=True)
             
             # Wait 1 second between readings to catch the whole minute
             time.sleep(1)
