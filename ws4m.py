@@ -1636,6 +1636,14 @@ def run_weather_station():
                     logger.warning("* No sensor data available yet")
                 print("-" * 50)
             
+            # Calculate seconds until next message (next whole minute)
+            seconds_until_next = 60 - current_second
+            if current_second == 0:
+                seconds_until_next = 60  # Just sent, next is in 60 seconds
+            
+            # Display countdown on one line (overwrite with \r)
+            print(f"\rNext message in {seconds_until_next} seconds...  ", end='', flush=True)
+            
             # Wait 1 second between readings to catch the whole minute
             time.sleep(1)
     
