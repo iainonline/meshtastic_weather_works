@@ -10,10 +10,14 @@ Python project to read temperature and humidity data from a DHT22 sensor connect
 - **Real-time temperature** (°F) and humidity (%) from DHT22 sensor
 - **Signal strength** (SNR) and hop count display
 - **Message delivery confirmation** - Uses ACK/NAK system to verify delivery
+- **Automatic retry** - Retries pending messages after configurable timeout (default 60s)
 - **Heltec V3 LED feedback**:
   - 1 quick blink (0.5s) when message is sent
+  - Slow pulse (0.3s on, 0.7s off) while waiting for ACK
   - 3 long blinks (1s each) when ACK received
-  - LED off when NAK/no response
+  - 5 quick flashes (0.1s) on NAK
+  - LED off when no response
+- **Real-time ACK notifications** - See confirmation on screen when ACK arrives
 - **Compact status display** - Shows send time, ACK time, and SNR on sender
 - **CSV logging** with 7-day retention and node statistics
 - **Reports menu** to view nodes seen on the network
@@ -77,6 +81,8 @@ selected_node = ying
 update_interval = 60
 auto_boot_timeout = 10
 usb_reconnect_interval = 10
+ack_retry_timeout = 60
+message_template = template1
 
 [logging]
 log_file = meshtastic_log.csv
@@ -121,7 +127,7 @@ H: 25% 14:20:31 (6/114)
 
 ### Message Delivery Confirmation
 
-The system now uses Meshtastic's ACK/NAK system to verify message delivery:
+The system uses Meshtastic's ACK/NAK system to verify message delivery with automatic retry capability:
 
 **Sender Display:**
 ```
@@ -134,15 +140,26 @@ SNR : 7.0
 ============================================================
 ```
 
+**Real-time ACK Notification:**
+When an ACK is received (even during sensor reading), you'll see:
+```
+✓ ACK received from yang at 16:24:29
+```
+
 **LED Feedback (Heltec V3):**
 - **1 quick blink** (0.5s on) - Message sent/queued
+- **Slow pulse** (0.3s on, 0.7s off, repeats) - Waiting for ACK
 - **3 long blinks** (1s on, 0.5s off between) - ACK received from target
-- **LED off** - NAK received or no acknowledgment
+- **5 quick flashes** (0.1s) - NAK received (delivery failed)
+- **LED off** - No acknowledgment after timeout
 
 **Status Messages:**
 - `✓ yang` - ACK received, delivery confirmed
 - `✗ NAK from: yang` - Delivery failed
-- `⏳ Pending response from: yang` - Awaiting acknowledgment
+- `⏳ Pending response from: yang` - Awaiting acknowledgment, will retry in 60s
+
+**Automatic Retry:**
+If no ACK is received within the timeout period (default 60 seconds, configurable via `ack_retry_timeout` in config.ini), the program automatically retries sending the message. The program continues normal operation (sensor readings) while waiting for the retry timeout.
 
 ### Customizing Message Templates
 
