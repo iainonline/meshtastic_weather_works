@@ -343,6 +343,7 @@ UPDATE_INTERVAL = 60
 AUTO_BOOT_TIMEOUT = 10
 USB_RECONNECT_INTERVAL = 10
 ACK_RETRY_TIMEOUT = 60
+WANT_ACK = False
 LOG_FILE = 'meshtastic_log.csv'
 AUTO_SAVE_INTERVAL = 300
 RETENTION_DAYS = 7
@@ -353,7 +354,7 @@ def load_config():
     """Load configuration from config.ini file."""
     global NODES, SELECTED_NODE_NAME, TARGET_NODE_INT, UPDATE_INTERVAL
     global AUTO_BOOT_TIMEOUT, USB_RECONNECT_INTERVAL, LOG_FILE, AUTO_SAVE_INTERVAL, RETENTION_DAYS
-    global MESSAGE_TEMPLATE, MESSAGE_TEMPLATES, ACK_RETRY_TIMEOUT
+    global MESSAGE_TEMPLATE, MESSAGE_TEMPLATES, ACK_RETRY_TIMEOUT, WANT_ACK
     
     if not config.read(config_file):
         logger.error(f"Failed to read {config_file}. Using defaults.")
@@ -378,10 +379,13 @@ def load_config():
         USB_RECONNECT_INTERVAL = config.getint('settings', 'usb_reconnect_interval', fallback=10)
         MESSAGE_TEMPLATE = config.get('settings', 'message_template', fallback='template1')
         ACK_RETRY_TIMEOUT = config.getint('settings', 'ack_retry_timeout', fallback=60)
+        want_ack_str = config.get('settings', 'want_ack', fallback='off').lower()
+        WANT_ACK = want_ack_str in ['on', 'true', 'yes', '1']
     else:
         SELECTED_NODE_NAME = 'yang'
         MESSAGE_TEMPLATE = 'template1'
         ACK_RETRY_TIMEOUT = 60
+        WANT_ACK = False
     
     # Load message templates
     if config.has_section('message_templates'):
@@ -1067,20 +1071,27 @@ def send_meshtastic_message(message):
             try:
                 logger.info(f"Attempting to send message to {name} (ID: {node_id})...")
                 
-                # Send with wantAck=True and register callback
-                packet = meshtastic_interface.sendText(
-                    message, 
-                    destinationId=node_id,
-                    wantAck=True,
-                    onResponse=ack_tracker.on_ack_nak
-                )
+                # Send with optional ACK based on config
+                if WANT_ACK:
+                    packet = meshtastic_interface.sendText(
+                        message, 
+                        destinationId=node_id,
+                        wantAck=True,
+                        onResponse=ack_tracker.on_ack_nak
+                    )
+                else:
+                    packet = meshtastic_interface.sendText(
+                        message, 
+                        destinationId=node_id,
+                        wantAck=False
+                    )
                 
                 # Single quick blink (0.5s on) when message is queued/sent
                 led_blink(times=1, duration=0.5)
                 
-                # Register this message for ACK tracking
+                # Register this message for ACK tracking only if ACK requested
                 # packet is a MeshPacket protobuf object, not a dict
-                if packet:
+                if packet and WANT_ACK:
                     try:
                         message_id = packet.id
                         ack_tracker.register_message(message_id, name)
@@ -1091,6 +1102,9 @@ def send_meshtastic_message(message):
                         # Fallback if packet doesn't have id attribute
                         logger.info(f"✓ Message queued for {name} (ID: {node_id})")
                         success_count += 1
+                elif packet:
+                    logger.info(f"✓ Message sent to {name} (ID: {node_id}, no ACK requested)")
+                    success_count += 1
                 else:
                     logger.info(f"✓ Message queued for {name} (ID: {node_id})")
                     success_count += 1
@@ -1331,6 +1345,7 @@ def run_weather_station():
     last_temperature_f = None
     last_humidity = None
     last_reconnect_attempt = 0
+    last_minute_sent = -1  # Track last minute we sent a message
     pending_retry_time = None  # Track when to retry pending messages
     pending_message = None  # Store message for retry
     pending_recipients = []  # Track who we're waiting for
@@ -1356,9 +1371,11 @@ def run_weather_station():
             logger.debug(f"Sensor read complete: temp={temperature_c}, humidity={humidity}")
             
             current_time = time.time()
+            current_minute = int(time.localtime(current_time).tm_min)
+            current_second = int(time.localtime(current_time).tm_sec)
             
-            # Check if we need to retry a pending message (after 120 seconds timeout)
-            if pending_retry_time and current_time >= pending_retry_time:
+            # Check if we need to retry a pending message (only if ACK is enabled)
+            if WANT_ACK and pending_retry_time and current_time >= pending_retry_time:
                 logger.info(f"Retry timeout reached for pending message to: {', '.join(pending_recipients)}")
                 logger.info("Retrying message send...")
                 
@@ -1490,8 +1507,10 @@ def run_weather_station():
                         check_and_reconnect_meshtastic()
                         last_reconnect_attempt = time.time()
                 
-                # Send message if connected
-                if meshtastic_connected:
+                # Send message if connected AND it's a whole minute AND we haven't sent this minute yet
+                if meshtastic_connected and current_second == 0 and current_minute != last_minute_sent:
+                    last_minute_sent = current_minute
+                    
                     # Record send time
                     send_time = time.strftime("%H:%M:%S")
                     
@@ -1514,80 +1533,85 @@ def run_weather_station():
                         print(f"📤 To: {recipient_text}")
                         print(f"Sent: {send_time}")
                         
-                        # Pulse LED while waiting for ACKs (up to 5 seconds)
-                        # Create a callback to check if any ACKs received
-                        current_msg_ids = result.get('message_ids', {})
-                        
-                        def check_ack_received():
-                            # Re-check status during pulse - only for current batch
-                            for msg_id in current_msg_ids.keys():
+                        if WANT_ACK:
+                            # Pulse LED while waiting for ACKs (up to 5 seconds)
+                            # Create a callback to check if any ACKs received
+                            current_msg_ids = result.get('message_ids', {})
+                            
+                            def check_ack_received():
+                                # Re-check status during pulse - only for current batch
+                                for msg_id in current_msg_ids.keys():
+                                    status = ack_tracker.get_status(msg_id)
+                                    if status == 'ack':
+                                        return True
+                                return False
+                            
+                            # Pulse for up to 5 seconds or until ACK received
+                            ack_during_pulse = led_pulse_while_waiting(5.0, check_ack_received)
+                            
+                            # Record ACK time and display status
+                            ack_time = time.strftime("%H:%M:%S")
+                            
+                            # Re-check final status - only for messages sent in this batch
+                            acked = []
+                            nacked = []
+                            pending = []
+                            
+                            for msg_id, node_name in current_msg_ids.items():
                                 status = ack_tracker.get_status(msg_id)
                                 if status == 'ack':
-                                    return True
-                            return False
-                        
-                        # Pulse for up to 5 seconds or until ACK received
-                        ack_during_pulse = led_pulse_while_waiting(5.0, check_ack_received)
-                        
-                        # Record ACK time and display status
-                        ack_time = time.strftime("%H:%M:%S")
-                        
-                        # Re-check final status - only for messages sent in this batch
-                        acked = []
-                        nacked = []
-                        pending = []
-                        
-                        for msg_id, node_name in current_msg_ids.items():
-                            status = ack_tracker.get_status(msg_id)
-                            if status == 'ack':
-                                acked.append(node_name)
-                            elif status == 'nak':
-                                nacked.append(node_name)
-                            elif status == 'pending':
-                                pending.append(node_name)
-                        
-                        if acked:
-                            for node_name in acked:
-                                # Get SNR for this node
-                                node_id = NODES.get(node_name)
-                                if node_id:
-                                    snr, _ = get_target_node_info(node_id)
-                                    snr_display = f"{snr:.1f}" if snr is not None else "--"
-                                else:
-                                    snr_display = "--"
-                                
-                                print(f"Ack : {ack_time}")
-                                print(f"SNR : {snr_display}")
-                                print(f"✓ {node_name}")
-                            # LED already blinked 3 times in callback
-                        
-                        if nacked:
-                            print(f"✗ NAK from: {', '.join(nacked)}")
-                            # Fast blink 5 times to indicate failure
-                            led_blink(times=5, duration=0.1)
-                        
-                        if pending:
-                            print(f"⏳ Pending response from: {', '.join(pending)}")
-                            # Set retry timer
-                            pending_retry_time = time.time() + ACK_RETRY_TIMEOUT
-                            pending_message = message
-                            pending_recipients = pending
-                            logger.info(f"Will retry in {ACK_RETRY_TIMEOUT} seconds at {time.strftime('%H:%M:%S', time.localtime(pending_retry_time))}")
+                                    acked.append(node_name)
+                                elif status == 'nak':
+                                    nacked.append(node_name)
+                                elif status == 'pending':
+                                    pending.append(node_name)
+                            
+                            if acked:
+                                for node_name in acked:
+                                    # Get SNR for this node
+                                    node_id = NODES.get(node_name)
+                                    if node_id:
+                                        snr, _ = get_target_node_info(node_id)
+                                        snr_display = f"{snr:.1f}" if snr is not None else "--"
+                                    else:
+                                        snr_display = "--"
+                                    
+                                    print(f"Ack : {ack_time}")
+                                    print(f"SNR : {snr_display}")
+                                    print(f"✓ {node_name}")
+                                # LED already blinked 3 times in callback
+                            
+                            if nacked:
+                                print(f"✗ NAK from: {', '.join(nacked)}")
+                                # Fast blink 5 times to indicate failure
+                                led_blink(times=5, duration=0.1)
+                            
+                            if pending:
+                                print(f"⏳ Pending response from: {', '.join(pending)}")
+                                # Set retry timer
+                                pending_retry_time = time.time() + ACK_RETRY_TIMEOUT
+                                pending_message = message
+                                pending_recipients = pending
+                                logger.info(f"Will retry in {ACK_RETRY_TIMEOUT} seconds at {time.strftime('%H:%M:%S', time.localtime(pending_retry_time))}")
+                                led_off()
+                            
+                            if not acked and not nacked and not pending:
+                                led_off()
+                                print("⚠ No acknowledgments received")
+                                # Clear any pending retry since nothing is pending
+                                pending_retry_time = None
+                                pending_message = None
+                                pending_recipients = []
+                            
+                            # If we got ACKs, clear pending retry
+                            if acked:
+                                pending_retry_time = None
+                                pending_message = None
+                                pending_recipients = []
+                        else:
+                            # ACK disabled - just show message sent
+                            print(f"✓ Message sent")
                             led_off()
-                        
-                        if not acked and not nacked and not pending:
-                            led_off()
-                            print("⚠ No acknowledgments received")
-                            # Clear any pending retry since nothing is pending
-                            pending_retry_time = None
-                            pending_message = None
-                            pending_recipients = []
-                        
-                        # If we got ACKs, clear pending retry
-                        if acked:
-                            pending_retry_time = None
-                            pending_message = None
-                            pending_recipients = []
                         
                         print("=" * 60)
                     else:
@@ -1614,8 +1638,8 @@ def run_weather_station():
                     logger.warning("* No sensor data available yet")
                 print("-" * 50)
             
-            # Wait configured interval between readings
-            time.sleep(UPDATE_INTERVAL)
+            # Wait 1 second between readings to catch the whole minute
+            time.sleep(1)
     
     except KeyboardInterrupt:
         logger.info("\n\nExiting program...")
