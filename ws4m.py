@@ -1614,15 +1614,13 @@ def run_weather_station():
                             led_off()
                         
                         print("=" * 60)
+                        
+                        # Log node data after sending message
+                        log_node_data()
                     else:
                         # No messages sent successfully
                         led_off()
-                    
-                    # Log node data after sending message
-                    log_node_data()
-                else:
-                    logger.warning("Meshtastic not available. Skipping message send.")
-                    led_off()
+
                 
                 # Auto-save CSV log every AUTO_SAVE_INTERVAL seconds
                 if time.time() - last_csv_save >= AUTO_SAVE_INTERVAL:
