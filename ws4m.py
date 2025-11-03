@@ -1541,6 +1541,7 @@ def run_weather_station():
     pending_retry_time = None  # Track when to retry pending messages
     pending_message = None  # Store message for retry
     pending_recipients = []  # Track who we're waiting for
+    first_message_sent = False  # Track if we've sent the initial message
     
     try:
         while True:
@@ -1697,8 +1698,15 @@ def run_weather_station():
                         check_and_reconnect_meshtastic()
                         last_reconnect_attempt = time.time()
                 
-                # Send message if connected AND it's a whole minute AND we haven't sent this minute yet
-                if meshtastic_connected and current_second == 0 and current_minute != last_minute_sent:
+                # Send message if connected AND (it's the first message OR it's a whole minute AND we haven't sent this minute yet)
+                should_send_first = meshtastic_connected and not first_message_sent
+                should_send_regular = meshtastic_connected and current_second == 0 and current_minute != last_minute_sent
+                
+                if should_send_first or should_send_regular:
+                    if should_send_first:
+                        first_message_sent = True
+                        logger.info("Sending initial message immediately...")
+                    
                     last_minute_sent = current_minute
                     
                     # Record send time
