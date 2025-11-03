@@ -205,7 +205,8 @@ class AckTracker:
                     return
             
             if not request_id or request_id not in self.pending:
-                logger.debug(f"ACK/NAK for unknown message ID: {request_id}")
+                if request_id:
+                    logger.debug(f"Received ACK/NAK for message not in tracking (msg_id: {request_id})")
                 return
             
             with self.lock:
@@ -1167,6 +1168,13 @@ def init_meshtastic():
         else:
             my_node_id = None
             logger.warning("Could not determine connected device's node ID")
+        
+        # Register ACK/NAK callback
+        if WANT_ACK:
+            meshtastic_interface.acknowledgmentCallback = ack_tracker.on_ack_nak
+            logger.info("ACK/NAK callback registered (want_ack=on)")
+        else:
+            logger.info("ACK/NAK callback not registered (want_ack=off)")
         
         logger.info("Meshtastic interface initialized successfully")
         return True
