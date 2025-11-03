@@ -277,6 +277,10 @@ AUTO_BOOT_TIMEOUT = 10
 USB_RECONNECT_INTERVAL = 10
 ACK_RETRY_TIMEOUT = 60
 WANT_ACK = False
+MESH_SEND_MODE = 'mesh'  # 'mesh' or 'direct'
+HOP_LIMIT = 3  # Will be set based on MESH_SEND_MODE
+PKI_ENCRYPTED = False  # Use public key encryption
+PUBLIC_KEYS = {}  # {node_name: base64_encoded_public_key}
 LOG_FILE = 'meshtastic_log.csv'
 AUTO_SAVE_INTERVAL = 300
 RETENTION_DAYS = 7
@@ -287,7 +291,8 @@ def load_config():
     """Load configuration from config.ini file."""
     global NODES, SELECTED_NODE_NAME, TARGET_NODE_INT, UPDATE_INTERVAL
     global AUTO_BOOT_TIMEOUT, USB_RECONNECT_INTERVAL, LOG_FILE, AUTO_SAVE_INTERVAL, RETENTION_DAYS
-    global MESSAGE_TEMPLATE, MESSAGE_TEMPLATES, ACK_RETRY_TIMEOUT, WANT_ACK
+    global MESSAGE_TEMPLATE, MESSAGE_TEMPLATES, ACK_RETRY_TIMEOUT, WANT_ACK, MESH_SEND_MODE, HOP_LIMIT
+    global PKI_ENCRYPTED, PUBLIC_KEYS
     
     if not config.read(config_file):
         logger.error(f"Failed to read {config_file}. Using defaults.")
@@ -314,11 +319,47 @@ def load_config():
         ACK_RETRY_TIMEOUT = config.getint('settings', 'ack_retry_timeout', fallback=60)
         want_ack_str = config.get('settings', 'want_ack', fallback='off').lower()
         WANT_ACK = want_ack_str in ['on', 'true', 'yes', '1']
+        
+        # Load mesh send mode setting
+        MESH_SEND_MODE = config.get('settings', 'mesh_send_mode', fallback='mesh').lower()
+        if MESH_SEND_MODE not in ['mesh', 'direct']:
+            logger.warning(f"Invalid mesh_send_mode '{MESH_SEND_MODE}', defaulting to 'mesh'")
+            MESH_SEND_MODE = 'mesh'
+        
+        # Set hop limit based on mode
+        if MESH_SEND_MODE == 'direct':
+            HOP_LIMIT = 0  # Direct to neighbors only, no mesh routing
+        else:  # 'mesh'
+            HOP_LIMIT = 3  # Allow mesh routing through up to 3 hops
+        
+        # Load PKI encryption setting
+        pki_encrypted_str = config.get('settings', 'pki_encrypted', fallback='off').lower()
+        PKI_ENCRYPTED = pki_encrypted_str in ['on', 'true', 'yes', '1']
     else:
         SELECTED_NODE_NAME = 'yang'
         MESSAGE_TEMPLATE = 'template1'
         ACK_RETRY_TIMEOUT = 60
         WANT_ACK = False
+        MESH_SEND_MODE = 'mesh'
+        HOP_LIMIT = 3
+        PKI_ENCRYPTED = False
+    
+    # Load public keys for PKI encryption
+    if config.has_section('public_keys'):
+        import base64
+        PUBLIC_KEYS = {}
+        for name, key_b64 in config.items('public_keys'):
+            try:
+                # Decode base64 public key
+                PUBLIC_KEYS[name] = base64.b64decode(key_b64)
+                logger.debug(f"Loaded public key for {name}")
+            except Exception as e:
+                logger.warning(f"Failed to decode public key for {name}: {e}")
+    else:
+        PUBLIC_KEYS = {}
+    
+    if PKI_ENCRYPTED and not PUBLIC_KEYS:
+        logger.warning("PKI encryption enabled but no public keys configured!")
     
     # Load message templates
     if config.has_section('message_templates'):
@@ -344,6 +385,11 @@ def load_config():
     logger.info(f"Available nodes: {NODES}")
     logger.info(f"Selected node: {SELECTED_NODE_NAME} = {TARGET_NODE_INT}")
     logger.info(f"Message template: {MESSAGE_TEMPLATE}")
+    logger.info(f"Mesh send mode: {MESH_SEND_MODE} (hop_limit={HOP_LIMIT})")
+    if PKI_ENCRYPTED:
+        logger.info(f"PKI encryption: ENABLED (public keys loaded for {len(PUBLIC_KEYS)} nodes)")
+    else:
+        logger.info(f"PKI encryption: DISABLED (using channel encryption)")
 
 def save_config():
     """Save current configuration to config.ini file."""
@@ -1002,7 +1048,17 @@ def send_meshtastic_message(message):
         
         for name, node_id in target_nodes:
             try:
-                logger.info(f"Attempting to send message to {name} (ID: {node_id})...")
+                mode_desc = "direct (no mesh)" if MESH_SEND_MODE == 'direct' else "mesh routing"
+                logger.info(f"Attempting to send message to {name} (ID: {node_id}) via {mode_desc}...")
+                
+                # Get public key if PKI encryption is enabled
+                public_key = None
+                if PKI_ENCRYPTED:
+                    public_key = PUBLIC_KEYS.get(name)
+                    if public_key:
+                        logger.debug(f"Using PKI encryption for {name}")
+                    else:
+                        logger.warning(f"PKI encryption enabled but no public key found for {name}")
                 
                 # Send with optional ACK based on config
                 if WANT_ACK:
@@ -1010,13 +1066,19 @@ def send_meshtastic_message(message):
                         message, 
                         destinationId=node_id,
                         wantAck=True,
-                        onResponse=ack_tracker.on_ack_nak
+                        onResponse=ack_tracker.on_ack_nak,
+                        hopLimit=HOP_LIMIT,
+                        pkiEncrypted=PKI_ENCRYPTED,
+                        publicKey=public_key
                     )
                 else:
                     packet = meshtastic_interface.sendText(
                         message, 
                         destinationId=node_id,
-                        wantAck=False
+                        wantAck=False,
+                        hopLimit=HOP_LIMIT,
+                        pkiEncrypted=PKI_ENCRYPTED,
+                        publicKey=public_key
                     )
                 
                 # Register this message for ACK tracking only if ACK requested

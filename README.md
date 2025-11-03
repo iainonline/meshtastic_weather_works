@@ -82,6 +82,8 @@ update_interval = 60
 auto_boot_timeout = 10
 usb_reconnect_interval = 10
 ack_retry_timeout = 60
+want_ack = off
+mesh_send_mode = mesh
 message_template = template1
 
 [logging]
@@ -89,6 +91,86 @@ log_file = meshtastic_log.csv
 auto_save_interval = 300
 retention_days = 7
 ```
+
+**Key Settings:**
+- `want_ack` - Enable/disable delivery confirmation (on/off)
+- `mesh_send_mode` - Message routing mode:
+  - `mesh` (default) - Messages route through the mesh network (hop_limit=3)
+  - `direct` - Messages only sent to direct neighbors (hop_limit=0)
+- `pki_encrypted` - Enable/disable PKI public key encryption (on/off, default off)
+- `ack_retry_timeout` - Seconds to wait before retrying on no ACK (default 60)
+
+### Mesh vs Direct Sending
+
+The `mesh_send_mode` setting controls how messages are routed:
+
+**Mesh Mode** (`mesh_send_mode = mesh`):
+- Messages can hop through up to 3 intermediate nodes
+- Best for reaching distant nodes not in direct radio range
+- Messages are forwarded by intermediate mesh nodes
+- Higher reliability for reaching remote nodes
+- Default and recommended for most deployments
+
+**Direct Mode** (`mesh_send_mode = direct`):
+- Messages only sent to direct neighbors (single hop)
+- No mesh routing or forwarding
+- Faster delivery, lower network congestion
+- Only works if target node is in direct radio range
+- Useful for local deployments or reducing mesh traffic
+
+Example use cases:
+- Use **mesh mode** when sender and receiver are far apart
+- Use **direct mode** when both nodes are at same location
+- Use **direct mode** to reduce mesh congestion in dense networks
+
+### PKI Public Key Encryption
+
+The `pki_encrypted` setting enables end-to-end encryption using public key infrastructure (PKI) instead of shared channel keys.
+
+**Channel Encryption (Default):**
+- Uses shared Pre-Shared Keys (PSK) configured in Meshtastic channels
+- Anyone with the channel key can decrypt messages
+- Simpler to configure, works out of the box
+- Suitable for trusted mesh networks
+
+**PKI Encryption** (`pki_encrypted = on`):
+- End-to-end encryption using recipient's public key
+- Only the recipient (with matching private key) can decrypt
+- More secure for sensitive data
+- Requires obtaining and configuring public keys for each node
+
+**To enable PKI encryption:**
+
+1. **Obtain public keys** from target nodes:
+```bash
+# On each target node, export its public key
+meshtastic --get-public-key
+# This outputs a base64-encoded public key
+```
+
+2. **Add public keys to config.ini:**
+```ini
+[settings]
+pki_encrypted = on
+
+[public_keys]
+yang = LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUZrd0V3WUhLb1pJemowQ0FRWUlL...
+ying = LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUZrd0V3WUhLb1pJemowQ0FRWUlL...
+```
+
+3. **Messages will now be PKI encrypted** when sent to nodes with configured public keys
+
+**Note:** PKI encryption is independent of mesh routing. You can use:
+- Mesh routing + channel encryption (default)
+- Mesh routing + PKI encryption
+- Direct routing + channel encryption
+- Direct routing + PKI encryption
+
+**When to use PKI:**
+- Sending sensitive weather data or telemetry
+- Communicating with untrusted mesh participants
+- Compliance requirements for data encryption
+- When you want to ensure only specific recipients can read messages
 
 To find node IDs, use the Meshtastic CLI:
 ```bash
