@@ -26,6 +26,7 @@ import csv
 import os
 import atexit
 import threading
+import base64
 
 # Configure logging
 logging.basicConfig(
@@ -623,11 +624,12 @@ def show_options_menu():
         pki_display = "ON" if PKI_ENCRYPTED else "OFF"
         print(f"7. Toggle PKI Encryption (current: {pki_display})")
         
-        print("8. Back to Main Menu")
+        print("8. Scan/Update Public Keys")
+        print("9. Back to Main Menu")
         print("\n" + "="*60)
         
         try:
-            choice = input("\nSelect option (1-8): ").strip()
+            choice = input("\nSelect option (1-9): ").strip()
             
             if choice == '1':
                 show_node_selection_menu()
@@ -644,9 +646,11 @@ def show_options_menu():
             elif choice == '7':
                 toggle_pki_encryption()
             elif choice == '8':
+                scan_and_update_public_keys()
+            elif choice == '9':
                 break
             else:
-                print("\nInvalid option. Please select 1-8.")
+                print("\nInvalid option. Please select 1-9.")
         except (KeyboardInterrupt, EOFError):
             break
 
@@ -807,6 +811,137 @@ def toggle_pki_encryption():
             
     except (KeyboardInterrupt, EOFError):
         print("\nPKI encryption unchanged.")
+
+def scan_and_update_public_keys():
+    """Scan for public keys from configured nodes and update config.ini."""
+    global PUBLIC_KEYS, meshtastic_interface
+    
+    print("\n" + "="*60)
+    print("SCAN AND UPDATE PUBLIC KEYS")
+    print("="*60)
+    
+    if not meshtastic_interface or not meshtastic_connected:
+        print("\n✗ Error: Meshtastic not connected!")
+        print("  Please start the weather station first to connect to Meshtastic.")
+        input("\nPress Enter to continue...")
+        return
+    
+    print("\nThis will scan all configured nodes for their public keys.")
+    print("You can choose to:")
+    print("  1. Add keys for nodes that don't have keys yet")
+    print("  2. Update all keys (including existing ones)")
+    print("  3. Cancel")
+    
+    try:
+        choice = input("\nSelect option (1-3): ").strip()
+        
+        if choice == '3':
+            print("Cancelled.")
+            return
+        
+        update_existing = (choice == '2')
+        
+        print("\nScanning nodes...")
+        print("-" * 60)
+        
+        # Track results
+        keys_added = []
+        keys_updated = []
+        keys_failed = []
+        keys_skipped = []
+        
+        for node_name, node_id in NODES.items():
+            # Check if we should skip this node
+            if node_name in PUBLIC_KEYS and not update_existing:
+                print(f"⊘ {node_name}: Skipped (already has key, use update to refresh)")
+                keys_skipped.append(node_name)
+                continue
+            
+            print(f"⌛ {node_name}: Requesting public key from node {node_id}...", end='', flush=True)
+            
+            try:
+                # Get node info from Meshtastic
+                if not hasattr(meshtastic_interface, 'nodes') or node_id not in meshtastic_interface.nodes:
+                    print(f" ✗ Not found in mesh")
+                    keys_failed.append(node_name)
+                    continue
+                
+                node = meshtastic_interface.nodes[node_id]
+                
+                # Check if node has a public key
+                if hasattr(node, 'user') and hasattr(node.user, 'publicKey') and node.user.publicKey:
+                    public_key_base64 = base64.b64encode(node.user.publicKey).decode('utf-8')
+                    
+                    # Update in memory
+                    was_existing = node_name in PUBLIC_KEYS
+                    PUBLIC_KEYS[node_name] = public_key_base64
+                    
+                    # Update config file
+                    if not config.has_section('public_keys'):
+                        config.add_section('public_keys')
+                    config.set('public_keys', node_name, public_key_base64)
+                    
+                    if was_existing:
+                        print(f" ✓ Updated")
+                        keys_updated.append(node_name)
+                    else:
+                        print(f" ✓ Added")
+                        keys_added.append(node_name)
+                else:
+                    print(f" ✗ No public key available")
+                    keys_failed.append(node_name)
+                    
+            except Exception as e:
+                print(f" ✗ Error: {e}")
+                keys_failed.append(node_name)
+        
+        # Save config file
+        if keys_added or keys_updated:
+            save_config()
+            print("\n" + "-" * 60)
+            print("✓ Configuration saved to config.ini")
+        
+        # Display summary
+        print("\n" + "="*60)
+        print("SUMMARY")
+        print("="*60)
+        
+        if keys_added:
+            print(f"\n✓ Keys added ({len(keys_added)}):")
+            for name in keys_added:
+                print(f"  • {name}")
+        
+        if keys_updated:
+            print(f"\n✓ Keys updated ({len(keys_updated)}):")
+            for name in keys_updated:
+                print(f"  • {name}")
+        
+        if keys_skipped:
+            print(f"\n⊘ Keys skipped ({len(keys_skipped)}):")
+            for name in keys_skipped:
+                print(f"  • {name}")
+        
+        if keys_failed:
+            print(f"\n✗ Failed to get keys ({len(keys_failed)}):")
+            for name in keys_failed:
+                print(f"  • {name}")
+            print("\nNote: Nodes must be online and have public keys enabled.")
+        
+        total_keys = len(PUBLIC_KEYS)
+        print(f"\nTotal public keys in config: {total_keys}")
+        
+        if total_keys > 0:
+            print("\nTo use PKI encryption:")
+            print("  1. Go to Options menu")
+            print("  2. Select 'Toggle PKI Encryption'")
+            print("  3. Enable PKI encryption")
+        
+        print("="*60)
+        
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+    
+    input("\nPress Enter to continue...")
 
 def show_menu():
     """Deprecated - kept for compatibility. Use show_node_selection_menu instead."""
