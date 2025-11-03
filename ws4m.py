@@ -814,17 +814,21 @@ def toggle_pki_encryption():
 
 def scan_and_update_public_keys():
     """Scan for public keys from configured nodes and update config.ini."""
-    global PUBLIC_KEYS, meshtastic_interface
+    global PUBLIC_KEYS, meshtastic_interface, meshtastic_connected
     
     print("\n" + "="*60)
     print("SCAN AND UPDATE PUBLIC KEYS")
     print("="*60)
     
+    # Check if Meshtastic is connected, if not try to connect
     if not meshtastic_interface or not meshtastic_connected:
-        print("\n✗ Error: Meshtastic not connected!")
-        print("  Please start the weather station first to connect to Meshtastic.")
-        input("\nPress Enter to continue...")
-        return
+        print("\nMeshtastic not connected. Attempting to connect...")
+        if not init_meshtastic():
+            print("\n✗ Error: Failed to connect to Meshtastic!")
+            print("  Please ensure Meshtastic device is connected via USB.")
+            input("\nPress Enter to continue...")
+            return
+        print("✓ Connected to Meshtastic")
     
     print("\nThis will scan all configured nodes for their public keys.")
     print("You can choose to:")
