@@ -11,6 +11,7 @@ import adafruit_dht
 import meshtastic
 import meshtastic.serial_interface
 import meshtastic.remote_hardware
+from meshtastic import portnums_pb2
 import configparser
 import logging
 from datetime import datetime, timedelta
@@ -1053,33 +1054,56 @@ def send_meshtastic_message(message):
                 
                 # Get public key if PKI encryption is enabled
                 public_key = None
+                use_pki = False
                 if PKI_ENCRYPTED:
                     public_key = PUBLIC_KEYS.get(name)
                     if public_key:
                         logger.debug(f"Using PKI encryption for {name}")
+                        use_pki = True
                     else:
-                        logger.warning(f"PKI encryption enabled but no public key found for {name}")
+                        logger.warning(f"PKI encryption enabled but no public key found for {name}, using channel encryption")
                 
-                # Send with optional ACK based on config
-                if WANT_ACK:
-                    packet = meshtastic_interface.sendText(
-                        message, 
-                        destinationId=node_id,
-                        wantAck=True,
-                        onResponse=ack_tracker.on_ack_nak,
-                        hopLimit=HOP_LIMIT,
-                        pkiEncrypted=PKI_ENCRYPTED,
-                        publicKey=public_key
-                    )
+                # Send with optional PKI encryption and ACK based on config
+                if use_pki:
+                    # Use sendData with PKI encryption
+                    if WANT_ACK:
+                        packet = meshtastic_interface.sendData(
+                            message.encode('utf-8'),
+                            destinationId=node_id,
+                            portNum=portnums_pb2.PortNum.TEXT_MESSAGE_APP,
+                            wantAck=True,
+                            onResponse=ack_tracker.on_ack_nak,
+                            hopLimit=HOP_LIMIT,
+                            pkiEncrypted=True,
+                            publicKey=public_key
+                        )
+                    else:
+                        packet = meshtastic_interface.sendData(
+                            message.encode('utf-8'),
+                            destinationId=node_id,
+                            portNum=portnums_pb2.PortNum.TEXT_MESSAGE_APP,
+                            wantAck=False,
+                            hopLimit=HOP_LIMIT,
+                            pkiEncrypted=True,
+                            publicKey=public_key
+                        )
                 else:
-                    packet = meshtastic_interface.sendText(
-                        message, 
-                        destinationId=node_id,
-                        wantAck=False,
-                        hopLimit=HOP_LIMIT,
-                        pkiEncrypted=PKI_ENCRYPTED,
-                        publicKey=public_key
-                    )
+                    # Use standard sendText (with channel encryption)
+                    if WANT_ACK:
+                        packet = meshtastic_interface.sendText(
+                            message, 
+                            destinationId=node_id,
+                            wantAck=True,
+                            onResponse=ack_tracker.on_ack_nak,
+                            hopLimit=HOP_LIMIT
+                        )
+                    else:
+                        packet = meshtastic_interface.sendText(
+                            message, 
+                            destinationId=node_id,
+                            wantAck=False,
+                            hopLimit=HOP_LIMIT
+                        )
                 
                 # Register this message for ACK tracking only if ACK requested
                 # packet is a MeshPacket protobuf object, not a dict
