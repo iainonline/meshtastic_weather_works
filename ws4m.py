@@ -167,10 +167,10 @@ class AckTracker:
     """Track ACK/NAK responses for sent messages."""
     
     def __init__(self):
-        self.pending = {}  # {message_id: {'node_name': name, 'ack_received': False, 'nak_received': False}}
+        self.pending = {}  # {message_id: {'node_name': name, 'ack_received': False, 'nak_received': False, 'snr': value}}
         self.lock = threading.Lock()
     
-    def register_message(self, message_id, node_name):
+    def register_message(self, message_id, node_name, snr=None):
         """Register a sent message awaiting acknowledgment."""
         with self.lock:
             self.pending[message_id] = {
@@ -178,9 +178,10 @@ class AckTracker:
                 'ack_received': False,
                 'nak_received': False,
                 'impl_ack_received': False,
-                'timestamp': time.time()
+                'timestamp': time.time(),
+                'snr': snr  # Store SNR from original message
             }
-            logger.debug(f"Registered message {message_id} for node {node_name}")
+            logger.debug(f"Registered message {message_id} for node {node_name} with SNR {snr}")
     
     def on_ack_nak(self, packet):
         """Callback for ACK/NAK responses from Meshtastic."""
@@ -227,6 +228,12 @@ class AckTracker:
                         ack_time = time.strftime("%H:%M:%S")
                         logger.info(f"✓ ACK received from {node_name}")
                         print(f"\n✓ ACK received from {node_name} at {ack_time}")
+                        
+                        # Schedule ACK confirmation message (only if WANT_ACK is enabled)
+                        if WANT_ACK:
+                            snr = msg_info.get('snr')
+                            threading.Timer(10.0, self.send_ack_confirmation, args=(node_name, snr)).start()
+                            logger.info(f"ACK confirmation scheduled for {node_name} in 10 seconds")
         
         except Exception as e:
             logger.error(f"Error in ACK/NAK callback: {e}")
@@ -261,6 +268,49 @@ class AckTracker:
         """Clear all pending messages."""
         with self.lock:
             self.pending.clear()
+    
+    def send_ack_confirmation(self, node_name, snr):
+        """Send ACK confirmation message to the node that acknowledged."""
+        try:
+            global meshtastic_interface, my_node_id
+            
+            if not meshtastic_interface or not WANT_ACK:
+                return
+            
+            # Get the sender node name (our node)
+            my_node_name = next((name for name, node_id in NODES.items() if node_id == my_node_id), "unknown")
+            
+            # Get the target node ID
+            target_node_id = NODES.get(node_name)
+            if not target_node_id:
+                logger.warning(f"Cannot send ACK confirmation: node {node_name} not found in config")
+                return
+            
+            # Format the ACK confirmation message
+            date_time = time.strftime("%m/%d %H:%M:%S")
+            snr_str = f"{snr:.1f}" if snr is not None else "--"
+            
+            ack_message = f"{my_node_name} ack\n{date_time}\nSNR: {snr_str}"
+            
+            logger.info(f"Sending ACK confirmation to {node_name}: {ack_message.replace(chr(10), ' | ')}")
+            
+            # Send the ACK confirmation message
+            packet = meshtastic_interface.sendData(
+                ack_message.encode('utf-8'),
+                destinationId=target_node_id,
+                portNum=portnums_pb2.PortNum.TEXT_MESSAGE_APP,
+                wantAck=False,  # Don't request ACK for ACK confirmation
+                hopLimit=HOP_LIMIT
+            )
+            
+            if packet:
+                logger.info(f"✓ ACK confirmation sent to {node_name}")
+                print(f"\n✓ ACK confirmation sent to {node_name}")
+            else:
+                logger.warning(f"Failed to send ACK confirmation to {node_name}")
+                
+        except Exception as e:
+            logger.error(f"Error sending ACK confirmation: {e}")
 
 # Global ACK tracker
 ack_tracker = AckTracker()
@@ -1138,12 +1188,16 @@ def check_and_reconnect_meshtastic():
     
     return True
 
-def send_meshtastic_message(message):
+def send_meshtastic_message(message, snr=None):
     """
     Send a private message to configured nodes with delivery confirmation.
     If connected device matches a node in config, sends to all other nodes.
     Otherwise, sends to the selected target node.
     Returns dict: {'sent': count, 'acked': [], 'nacked': [], 'pending': []}
+    
+    Args:
+        message: The message text to send
+        snr: Signal-to-noise ratio of the target node (for ACK confirmation)
     """
     global meshtastic_interface, meshtastic_connected, my_node_id
     
@@ -1224,7 +1278,7 @@ def send_meshtastic_message(message):
                 if packet and WANT_ACK:
                     try:
                         message_id = packet.id
-                        ack_tracker.register_message(message_id, name)
+                        ack_tracker.register_message(message_id, name, snr)
                         message_ids[message_id] = name
                         logger.info(f"✓ Message queued for {name} (ID: {node_id}, msg_id: {message_id})")
                         success_count += 1
@@ -1642,7 +1696,7 @@ def run_weather_station():
                     # Record send time
                     send_time = time.strftime("%H:%M:%S")
                     
-                    result = send_meshtastic_message(message)
+                    result = send_meshtastic_message(message, snr)
                     
                     if result['sent'] > 0:
                         # Determine recipient(s)
