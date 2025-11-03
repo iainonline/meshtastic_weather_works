@@ -559,11 +559,24 @@ def show_options_menu():
         print(f"2. Change Update Interval (current: {UPDATE_INTERVAL}s)")
         print(f"3. Change USB Reconnect Interval (current: {USB_RECONNECT_INTERVAL}s)")
         print(f"4. Change Log Retention Days (current: {RETENTION_DAYS} days)")
-        print("5. Back to Main Menu")
+        
+        # Display current mesh routing mode
+        mesh_mode_display = "mesh (hop_limit=3)" if MESH_SEND_MODE == 'mesh' else "direct (hop_limit=0)"
+        print(f"5. Change Mesh Routing Mode (current: {mesh_mode_display})")
+        
+        # Display current ACK setting
+        ack_display = "ON" if WANT_ACK else "OFF"
+        print(f"6. Toggle Message ACK (current: {ack_display})")
+        
+        # Display current PKI setting
+        pki_display = "ON" if PKI_ENCRYPTED else "OFF"
+        print(f"7. Toggle PKI Encryption (current: {pki_display})")
+        
+        print("8. Back to Main Menu")
         print("\n" + "="*60)
         
         try:
-            choice = input("\nSelect option (1-5): ").strip()
+            choice = input("\nSelect option (1-8): ").strip()
             
             if choice == '1':
                 show_node_selection_menu()
@@ -574,9 +587,15 @@ def show_options_menu():
             elif choice == '4':
                 change_retention_days()
             elif choice == '5':
+                change_mesh_routing_mode()
+            elif choice == '6':
+                toggle_want_ack()
+            elif choice == '7':
+                toggle_pki_encryption()
+            elif choice == '8':
                 break
             else:
-                print("\nInvalid option. Please select 1-5.")
+                print("\nInvalid option. Please select 1-8.")
         except (KeyboardInterrupt, EOFError):
             break
 
@@ -624,6 +643,119 @@ def change_retention_days():
             print(f"✓ Log retention changed to {RETENTION_DAYS} days")
     except ValueError:
         print("Invalid input. Retention days unchanged.")
+
+def change_mesh_routing_mode():
+    """Change the mesh routing mode setting."""
+    global MESH_SEND_MODE, HOP_LIMIT
+    
+    print("\n" + "="*60)
+    print("MESH ROUTING MODE")
+    print("="*60)
+    print("\nCurrent mode: " + ("mesh (hop_limit=3)" if MESH_SEND_MODE == 'mesh' else "direct (hop_limit=0)"))
+    print("\nAvailable modes:")
+    print("  1. mesh   - Route through mesh network (hop_limit=3)")
+    print("             Use when nodes are far apart")
+    print("  2. direct - Send only to direct neighbors (hop_limit=0)")
+    print("             Use when nodes are co-located")
+    print("\n" + "="*60)
+    
+    try:
+        choice = input("\nSelect mode (1=mesh, 2=direct) or press Enter to cancel: ").strip()
+        
+        if choice == '1':
+            MESH_SEND_MODE = 'mesh'
+            HOP_LIMIT = 3
+        elif choice == '2':
+            MESH_SEND_MODE = 'direct'
+            HOP_LIMIT = 0
+        else:
+            print("Mesh routing mode unchanged.")
+            return
+        
+        # Save to config
+        if not config.has_section('settings'):
+            config.add_section('settings')
+        config.set('settings', 'mesh_send_mode', MESH_SEND_MODE)
+        save_config()
+        
+        mode_desc = "mesh (hop_limit=3)" if MESH_SEND_MODE == 'mesh' else "direct (hop_limit=0)"
+        print(f"✓ Mesh routing mode changed to: {mode_desc}")
+        
+    except (KeyboardInterrupt, EOFError):
+        print("\nMesh routing mode unchanged.")
+
+def toggle_want_ack():
+    """Toggle the want_ack setting."""
+    global WANT_ACK
+    
+    current_state = "ON" if WANT_ACK else "OFF"
+    new_state = "OFF" if WANT_ACK else "ON"
+    
+    print(f"\nCurrent ACK setting: {current_state}")
+    print(f"Change to: {new_state}?")
+    print("\nACK ON:  Messages request delivery confirmation (slower, more reliable)")
+    print("ACK OFF: Messages sent without confirmation (faster, less reliable)")
+    
+    try:
+        confirm = input("\nConfirm change? (y/n): ").strip().lower()
+        
+        if confirm == 'y':
+            WANT_ACK = not WANT_ACK
+            
+            # Save to config
+            if not config.has_section('settings'):
+                config.add_section('settings')
+            config.set('settings', 'want_ack', 'on' if WANT_ACK else 'off')
+            save_config()
+            
+            new_state = "ON" if WANT_ACK else "OFF"
+            print(f"✓ Message ACK changed to: {new_state}")
+        else:
+            print("ACK setting unchanged.")
+            
+    except (KeyboardInterrupt, EOFError):
+        print("\nACK setting unchanged.")
+
+def toggle_pki_encryption():
+    """Toggle the PKI encryption setting."""
+    global PKI_ENCRYPTED
+    
+    current_state = "ON" if PKI_ENCRYPTED else "OFF"
+    new_state = "OFF" if PKI_ENCRYPTED else "ON"
+    
+    print(f"\nCurrent PKI encryption: {current_state}")
+    print(f"Change to: {new_state}?")
+    print("\nPKI ON:  Use public key encryption (requires public keys in config)")
+    print("PKI OFF: Use channel encryption (default)")
+    
+    if not PKI_ENCRYPTED and len(PUBLIC_KEYS) == 0:
+        print("\n⚠ WARNING: No public keys configured in config.ini!")
+        print("  Add keys to [public_keys] section before enabling PKI.")
+    
+    try:
+        confirm = input("\nConfirm change? (y/n): ").strip().lower()
+        
+        if confirm == 'y':
+            PKI_ENCRYPTED = not PKI_ENCRYPTED
+            
+            # Save to config
+            if not config.has_section('settings'):
+                config.add_section('settings')
+            config.set('settings', 'pki_encrypted', 'on' if PKI_ENCRYPTED else 'off')
+            save_config()
+            
+            new_state = "ON" if PKI_ENCRYPTED else "OFF"
+            print(f"✓ PKI encryption changed to: {new_state}")
+            
+            if PKI_ENCRYPTED and len(PUBLIC_KEYS) > 0:
+                print(f"  Using public keys for {len(PUBLIC_KEYS)} node(s): {', '.join(PUBLIC_KEYS.keys())}")
+            elif PKI_ENCRYPTED:
+                print("  ⚠ No public keys loaded - will fall back to channel encryption")
+        else:
+            print("PKI encryption unchanged.")
+            
+    except (KeyboardInterrupt, EOFError):
+        print("\nPKI encryption unchanged.")
 
 def show_menu():
     """Deprecated - kept for compatibility. Use show_node_selection_menu instead."""
@@ -1063,47 +1195,29 @@ def send_meshtastic_message(message):
                     else:
                         logger.warning(f"PKI encryption enabled but no public key found for {name}, using channel encryption")
                 
-                # Send with optional PKI encryption and ACK based on config
-                if use_pki:
-                    # Use sendData with PKI encryption
-                    if WANT_ACK:
-                        packet = meshtastic_interface.sendData(
-                            message.encode('utf-8'),
-                            destinationId=node_id,
-                            portNum=portnums_pb2.PortNum.TEXT_MESSAGE_APP,
-                            wantAck=True,
-                            onResponse=ack_tracker.on_ack_nak,
-                            hopLimit=HOP_LIMIT,
-                            pkiEncrypted=True,
-                            publicKey=public_key
-                        )
-                    else:
-                        packet = meshtastic_interface.sendData(
-                            message.encode('utf-8'),
-                            destinationId=node_id,
-                            portNum=portnums_pb2.PortNum.TEXT_MESSAGE_APP,
-                            wantAck=False,
-                            hopLimit=HOP_LIMIT,
-                            pkiEncrypted=True,
-                            publicKey=public_key
-                        )
+                # Always use sendData to support hopLimit parameter
+                # sendText doesn't support hopLimit in this version
+                if WANT_ACK:
+                    packet = meshtastic_interface.sendData(
+                        message.encode('utf-8'),
+                        destinationId=node_id,
+                        portNum=portnums_pb2.PortNum.TEXT_MESSAGE_APP,
+                        wantAck=True,
+                        onResponse=ack_tracker.on_ack_nak,
+                        hopLimit=HOP_LIMIT,
+                        pkiEncrypted=use_pki,
+                        publicKey=public_key if use_pki else None
+                    )
                 else:
-                    # Use standard sendText (with channel encryption)
-                    if WANT_ACK:
-                        packet = meshtastic_interface.sendText(
-                            message, 
-                            destinationId=node_id,
-                            wantAck=True,
-                            onResponse=ack_tracker.on_ack_nak,
-                            hopLimit=HOP_LIMIT
-                        )
-                    else:
-                        packet = meshtastic_interface.sendText(
-                            message, 
-                            destinationId=node_id,
-                            wantAck=False,
-                            hopLimit=HOP_LIMIT
-                        )
+                    packet = meshtastic_interface.sendData(
+                        message.encode('utf-8'),
+                        destinationId=node_id,
+                        portNum=portnums_pb2.PortNum.TEXT_MESSAGE_APP,
+                        wantAck=False,
+                        hopLimit=HOP_LIMIT,
+                        pkiEncrypted=use_pki,
+                        publicKey=public_key if use_pki else None
+                    )
                 
                 # Register this message for ACK tracking only if ACK requested
                 # packet is a MeshPacket protobuf object, not a dict
