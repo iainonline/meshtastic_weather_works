@@ -1,30 +1,61 @@
 # Meshtastic Weather Station for Raspberry Pi 5
 
-Python project to read temperature and humidity data from a DHT22 sensor connected to a Raspberry Pi 5 and send updates to Meshtastic nodes on the mesh network.
+**Version 2.0** - Advanced mesh messaging with ACK confirmation, PKI encryption, and SNR analytics
 
-## Features
+Python project to read temperature and humidity data from a DHT22 sensor connected to a Raspberry Pi 5 and send updates to Meshtastic nodes on the mesh network with delivery confirmation and signal strength tracking.
 
+## Version 2.0 Features
+
+### Core Features
 - **Interactive menu system** with auto-start option
 - **Multi-node support** - configure multiple target nodes
 - **Smart routing** - automatically sends to all other nodes when sender is in config
 - **Real-time temperature** (°F) and humidity (%) from DHT22 sensor
-- **Signal strength** (SNR) and hop count display
-- **Message delivery confirmation** - Uses ACK/NAK system to verify delivery
-- **Automatic retry** - Retries pending messages after configurable timeout (default 60s)
-- **Heltec V3 LED feedback**:
-  - 1 quick blink (0.5s) when message is sent
-  - Slow pulse (0.3s on, 0.7s off) while waiting for ACK
-  - 3 long blinks (1s each) when ACK received
-  - 5 quick flashes (0.1s) on NAK
-  - LED off when no response
-- **Real-time ACK notifications** - See confirmation on screen when ACK arrives
-- **Compact status display** - Shows send time, ACK time, and SNR on sender
-- **CSV logging** with 7-day retention and node statistics
+- **Signal strength** (SNR) and hop count display in messages
+- **CSV logging** with configurable retention and node statistics
 - **Reports menu** to view nodes seen on the network
 - **Auto-reconnect** for USB Meshtastic device
 - **Sensor reset** functionality for improved reliability
 - **Customizable message templates** via config.ini
 - **Autostart on boot** capability
+
+### New in Version 2.0
+
+#### Advanced ACK Confirmation System
+- **Delivery confirmation** - Uses ACK/NAK system to verify message delivery
+- **Verbose ACK tracking** - Real-time console output shows ACK callback activity
+- **ACK status indicators** - Messages show 'A' (acknowledged) or 'U' (unacknowledged)
+- **Configurable ACK wait time** - Set delay before sending confirmation (default 30s for mesh)
+- **Automatic retry** - Retries pending messages after configurable timeout (default 60s)
+- **ACK confirmation messages** - Sender receives confirmation with timestamp and SNR
+- **Real-time ACK notifications** - See confirmation on screen when ACK arrives
+- **Compact status display** - Shows send time, ACK time, and SNR on sender
+
+#### PKI Public Key Encryption
+- **End-to-end encryption** - Use recipient's public key instead of shared channel keys
+- **Auto-scan feature** - Menu option to scan and update public keys from nodes
+- **Manual key entry** - Support for nodes without PKI enabled
+- **Per-message encryption** - Choose PKI or channel encryption per node
+- **Secure messaging** - Only recipient can decrypt with their private key
+
+#### Channel Control
+- **Configurable channel** - Prevent messages from appearing on public LongFast channel
+- **Channel index setting** - Send to specific channel (0 = primary/private)
+- **Privacy control** - Keep weather messages on private channels only
+
+#### SNR Statistics & Analytics
+- **All-time SNR tracking** - Track min (cutoff), max (optimal), and average SNR per node
+- **Trend analysis** - View recent SNR values (last 10) to spot signal degradation
+- **Time period tracking** - Shows first seen, last seen, and total duration
+- **Persistent storage** - Stats saved to `snr_stats.json` and survive restarts
+- **Reset capability** - Clear statistics with double confirmation safety
+- **Diagnostic reports** - Identify weak signals and optimal conditions per node
+
+#### Enhanced User Experience
+- **Verbose ACK debugging** - Detailed console output for troubleshooting ACK issues
+- **Clean countdown display** - Removed confusing retry messages from console
+- **Status indicators in templates** - {ack} placeholder shows A/U status
+- **Improved error messages** - Better feedback for ACK, PKI, and channel issues
 
 ## Hardware Requirements
 
@@ -81,24 +112,72 @@ selected_node = ying
 update_interval = 60
 auto_boot_timeout = 10
 usb_reconnect_interval = 10
-ack_retry_timeout = 60
-want_ack = off
-mesh_send_mode = mesh
 message_template = template1
+ack_retry_timeout = 60
+ack_wait_time = 30
+want_ack = on
+mesh_send_mode = mesh
+pki_encrypted = on
+channel_index = 0
+
+[public_keys]
+yang = bOatKxov+G+kjVIzYP1bLV0sF1kktpVrhAMGwsMttVA=
+ying = 0d5PCyDP0yUCEzH0AIcx1UUGoifdnuiMHRLEURNJTxM=
 
 [logging]
 log_file = meshtastic_log.csv
 auto_save_interval = 300
 retention_days = 7
+
+[message_templates]
+template1 = {date} {time} ({online}/{total})\nT: {temp}F {snr} SNR {hops} HOP {ack}\nH: {humidity}%% {time_detail} ({online}/{total})
+template2 = {date} {time}\nNodes: {online}/{total}\nT: {temp}F SNR:{snr}\nH: {humidity}%% Hops:{hops} {ack}
+template3 = {date} {time} T:{temp}F\nH: {humidity}%% Signal:{snr} Hops:{hops} {ack} ({online}/{total})
 ```
 
 **Key Settings:**
-- `want_ack` - Enable/disable delivery confirmation (on/off)
+- `want_ack` - Enable/disable delivery confirmation (on/off, **recommended: on**)
+- `ack_wait_time` - Seconds to wait before sending ACK confirmation (default 30, recommended 30-60 for mesh)
+- `ack_retry_timeout` - Seconds to wait before retrying on no ACK (default 60)
 - `mesh_send_mode` - Message routing mode:
   - `mesh` (default) - Messages route through the mesh network (hop_limit=3)
   - `direct` - Messages only sent to direct neighbors (hop_limit=0)
 - `pki_encrypted` - Enable/disable PKI public key encryption (on/off, default off)
-- `ack_retry_timeout` - Seconds to wait before retrying on no ACK (default 60)
+- `channel_index` - Channel to send on (0 = primary/private, prevents LongFast broadcast)
+
+### ACK Wait Time Configuration
+
+**New in v2.0**: The `ack_wait_time` setting controls how long to wait before sending an ACK confirmation message back to the sender.
+
+**Why this matters for mesh networks:**
+- Mesh messages take time to propagate through multiple hops
+- ACKs need to travel back through the mesh to reach the original sender
+- 10 seconds (old default) was too short for mesh networks
+- 30 seconds (new default) gives sufficient time for mesh routing
+
+**Recommended values:**
+- **Mesh networks**: 30-60 seconds (default 30)
+- **Direct communication**: 10-20 seconds
+- **Very slow mesh**: 45-60 seconds
+- **Co-located nodes**: 10-15 seconds
+
+**Configure via menu**: Options → Change ACK Wait Time (option 9)
+
+### Channel Index Configuration
+
+**New in v2.0**: The `channel_index` setting prevents your messages from appearing on public shared channels like LongFast.
+
+**How it works:**
+- `channel_index = 0` - Send on primary channel (typically private/encrypted)
+- `channel_index = 1-7` - Send on secondary channels (may be public)
+
+**Why use channel 0:**
+- Keeps weather messages private to your mesh
+- Prevents broadcast on shared LongFast channel
+- Only nodes with access to your primary channel see messages
+- Works with both channel encryption and PKI encryption
+
+**Default:** `channel_index = 0` (recommended)
 
 ### Mesh vs Direct Sending
 
@@ -125,6 +204,8 @@ Example use cases:
 
 ### PKI Public Key Encryption
 
+**Enhanced in v2.0** with auto-scan feature and improved key management.
+
 The `pki_encrypted` setting enables end-to-end encryption using public key infrastructure (PKI) instead of shared channel keys.
 
 **Channel Encryption (Default):**
@@ -139,13 +220,28 @@ The `pki_encrypted` setting enables end-to-end encryption using public key infra
 - More secure for sensitive data
 - Requires obtaining and configuring public keys for each node
 
-**To enable PKI encryption:**
+**To enable PKI encryption (Method 1 - Auto-scan):**
+
+1. **Enable PKI on your nodes** (Meshtastic CLI or app):
+```bash
+meshtastic --set security.public_key true
+```
+
+2. **Use the built-in scanner** (Options menu → Scan/Update Public Keys):
+   - Automatically discovers and imports public keys from nodes
+   - Saves keys to `config.ini` in base64 format
+   - Handles missing keys gracefully (warns if PKI not enabled on node)
+   - Option to update existing keys or add new ones only
+
+3. **Enable PKI encryption** (Options menu → Toggle PKI Encryption)
+
+**To enable PKI encryption (Method 2 - Manual):**
 
 1. **Obtain public keys** from target nodes:
 ```bash
-# On each target node, export its public key
-meshtastic --get-public-key
-# This outputs a base64-encoded public key
+# On each target node, get its public key
+meshtastic --info
+# Look for "Public Key" field in output
 ```
 
 2. **Add public keys to config.ini:**
@@ -154,8 +250,8 @@ meshtastic --get-public-key
 pki_encrypted = on
 
 [public_keys]
-yang = LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUZrd0V3WUhLb1pJemowQ0FRWUlL...
-ying = LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUZrd0V3WUhLb1pJemowQ0FRWUlL...
+yang = bOatKxov+G+kjVIzYP1bLV0sF1kktpVrhAMGwsMttVA=
+ying = 0d5PCyDP0yUCEzH0AIcx1UUGoifdnuiMHRLEURNJTxM=
 ```
 
 3. **Messages will now be PKI encrypted** when sent to nodes with configured public keys
@@ -199,15 +295,26 @@ Messages use customizable templates defined in `config.ini`. The default templat
 
 ```
 10/31 14:20 (6/114)
-T: 83F 6.2 SNR 0 HOP
+T: 83F 6.2 SNR 0 HOP A
 H: 25% 14:20:31 (6/114)
 ```
 
 - **Line 1**: Date, time, (online nodes/total nodes)
-- **Line 2**: Temperature in Fahrenheit, SNR (signal strength), HOP count
+- **Line 2**: Temperature in Fahrenheit, SNR (signal strength), HOP count, **A/U (ACK status)**
 - **Line 3**: Humidity percentage, military time, (online/total nodes)
 
+### New in v2.0: ACK Status Indicator
+
+The `{ack}` placeholder shows the acknowledgment status of the previous message:
+- **A** - Message was acknowledged (delivery confirmed)
+- **U** - Message was not acknowledged (delivery uncertain)
+- **(blank)** - No previous message or ACK tracking disabled
+
+This helps you see at a glance if your messages are getting through!
+
 ### Message Delivery Confirmation
+
+**Enhanced in v2.0** with verbose tracking and configurable timing.
 
 The system uses Meshtastic's ACK/NAK system to verify message delivery with automatic retry capability:
 
@@ -228,6 +335,27 @@ When an ACK is received (even during sensor reading), you'll see:
 ✓ ACK received from yang at 16:24:29
 ```
 
+**Verbose ACK Tracking (New in v2.0):**
+Detailed console output helps troubleshoot ACK issues:
+```
+[ACK] ACK tracking enabled - callback registered
+[ACK] Message 123456789 sent to ying, waiting for ACK...
+[ACK CALLBACK] Received packet - request_id: 123456789, from_node: 2658555560, error: NONE
+[ACK] Processing response for message 123456789 to ying
+✓ REAL ACK received from ying at 16:24:29!
+[ACK] Confirmation message will be sent in 30 seconds
+```
+
+**ACK Confirmation Messages (New in v2.0):**
+After receiving an ACK, the sender waits 30 seconds (configurable) then sends a confirmation:
+```
+yang ack
+11/03 16:24:59
+SNR: 7.2
+```
+
+This lets the receiver know their ACK was received!
+
 **LED Feedback (Heltec V3):**
 - **1 quick blink** (0.5s on) - Message sent/queued
 - **Slow pulse** (0.3s on, 0.7s off, repeats) - Waiting for ACK
@@ -238,10 +366,67 @@ When an ACK is received (even during sensor reading), you'll see:
 **Status Messages:**
 - `✓ yang` - ACK received, delivery confirmed
 - `✗ NAK from: yang` - Delivery failed
-- `⏳ Pending response from: yang` - Awaiting acknowledgment, will retry in 60s
+- `⏳ Pending response from: yang` - Awaiting acknowledgment
+- `[ACK] Still waiting for ACK from 1 node(s)` - Verbose status during wait
 
 **Automatic Retry:**
 If no ACK is received within the timeout period (default 60 seconds, configurable via `ack_retry_timeout` in config.ini), the program automatically retries sending the message. The program continues normal operation (sensor readings) while waiting for the retry timeout.
+
+## SNR Statistics & Analytics
+
+**New in v2.0**: Track signal quality over time with persistent all-time statistics.
+
+### Viewing SNR Statistics
+
+From the Reports menu, select "SNR Statistics" to see:
+
+```
+SNR STATISTICS (Signal-to-Noise Ratio) - ALL TIME
+================================================================================
+Min SNR = Cutoff (weakest signal ever seen)
+Max SNR = Optimal (strongest signal ever seen)
+
+Node Name            Min (Cutoff)    Max (Optimal)   Average    Count     
+--------------------------------------------------------------------------------
+yang                 -12.5 dB        8.2 dB          -2.3 dB    247       
+  Period: 2025-11-03 08:15 to 2025-11-03 18:30 (span: 10h 15m)
+  Recent trend: -3.2, -1.8, -2.5, 0.5, -3.1, 1.2, -0.8, -2.3, -4.1, -1.5
+
+Total nodes tracked: 1
+Statistics file: snr_stats.json
+
+Note: These are all-time statistics since last reset.
+```
+
+### Features
+
+- **All-time tracking** - Statistics persist across restarts via `snr_stats.json`
+- **Min/Max SNR** - Identify cutoff (weakest) and optimal (strongest) signals
+- **Running average** - Overall signal quality indicator
+- **Sample count** - Number of readings collected
+- **Time period** - First seen, last seen, and total duration
+- **Recent trend** - Last 10 SNR values to spot signal degradation
+- **Reset capability** - Clear statistics with double confirmation
+
+### Use Cases
+
+1. **Identify weak signals**: Low min SNR shows communication is possible but marginal
+2. **Optimal conditions**: High max SNR shows best-case signal strength
+3. **Trend analysis**: Recent values show if signal is improving or degrading
+4. **Network planning**: Use stats to optimize node placement
+5. **Troubleshooting**: Compare min/max/avg to diagnose connectivity issues
+
+### Resetting Statistics
+
+At the bottom of the SNR Statistics report:
+```
+Reset all statistics? (y/n): y
+Are you sure? This cannot be undone (y/n): y
+
+✓ SNR statistics have been reset
+```
+
+This clears all historical data and starts fresh tracking.
 
 ### Customizing Message Templates
 
@@ -271,11 +456,12 @@ template1 = {date} {time} ({online}/{total})\nT: {temp}F {snr} SNR {hops} HOP\nH
 - `{humidity}` - Humidity (integer)
 - `{snr}` - Signal strength (1 decimal)
 - `{hops}` - Hop count
+- `{ack}` - ACK status indicator: **A** (ack), **U** (unack), or blank **(New in v2.0)**
 
 Three templates are included:
-- **template1** (default): 3-line compact format with signal info on all lines
-- **template2**: 4-line detailed format
-- **template3**: 2-line simple format
+- **template1** (default): 3-line compact format with signal info and ACK status
+- **template2**: 4-line detailed format with ACK status
+- **template3**: 2-line simple format with ACK status
 
 ## Autostart Setup
 
@@ -354,12 +540,33 @@ sudo systemctl disable ws4m    # Disable autostart
 
 ## Menu Options
 
+### Main Menu
+
 1. **Start Sending Messages** - Begin reading sensor and sending to mesh
 2. **Stop Sending Messages** - Return to main menu
-3. **Options** - Configure settings (target node, intervals, retention)
-4. **Reports** - View nodes seen on the network
+3. **Options** - Configure settings (see Options Menu below)
+4. **Reports** - View statistics and analytics (see Reports Menu below)
 5. **View Sample Message** - Preview message format
 6. **Exit** - Quit the program
+
+### Options Menu
+
+1. **Change Message Target Node** - Select which node(s) to send to
+2. **Change Update Interval** - Set seconds between messages (default 60)
+3. **Change USB Reconnect Interval** - Set Meshtastic reconnect delay (default 10)
+4. **Change Log Retention Days** - Set CSV log retention period (default 7)
+5. **Change Mesh Routing Mode** - Switch between mesh and direct modes
+6. **Toggle Message ACK** - Enable/disable delivery confirmation
+7. **Toggle PKI Encryption** - Enable/disable public key encryption
+8. **Scan/Update Public Keys** - Auto-discover and import public keys **(New in v2.0)**
+9. **Change ACK Wait Time** - Set delay for ACK confirmation messages **(New in v2.0)**
+10. **Back to Main Menu**
+
+### Reports Menu
+
+1. **List of Nodes Seen** - View all nodes heard on the mesh with last heard times
+2. **SNR Statistics** - View all-time signal quality analytics **(New in v2.0)**
+3. **Back to Main Menu**
 
 ## Customization
 
@@ -416,6 +623,30 @@ newnode = 1234567890
 - Target node may not be in range or not heard from yet
 - Signal info appears once target node is heard on the mesh
 
+**ACK issues (New in v2.0 troubleshooting):**
+- Check verbose ACK output: `[ACK]` messages show callback activity
+- Verify `want_ack = on` in config.ini
+- Check ACK callback is registered: Look for "ACK tracking enabled" at startup
+- Try increasing `ack_wait_time` to 60 seconds for slow mesh networks
+- Verify target node is responding: Check if you receive any ACK callbacks
+
+**Messages appearing on LongFast (New in v2.0):**
+- Set `channel_index = 0` in config.ini to use primary channel
+- Restart the program after changing channel setting
+- Verify with another node that messages are on correct channel
+
+**PKI encryption not working (New in v2.0):**
+- Verify `pki_encrypted = on` in config.ini
+- Use Options menu → Scan/Update Public Keys to import keys
+- Check nodes have PKI enabled: `meshtastic --set security.public_key true`
+- Fallback: If no public key, messages use channel encryption automatically
+
+**SNR statistics not updating (New in v2.0):**
+- Statistics only update when messages are received with SNR values
+- Check `snr_stats.json` file exists and is writable
+- Stats auto-save every 10 updates
+- Manual save on clean exit (Ctrl+C gracefully)
+
 **Permission errors**: Add user to required groups:
 ```bash
 sudo usermod -a -G dialout,gpio $USER
@@ -435,6 +666,55 @@ This project is designed for Raspberry Pi 5 but works on:
 - Raspberry Pi 3/3+
 - Any Raspberry Pi with 40-pin GPIO header
 
+Requires Meshtastic firmware 2.0+ for full PKI encryption support.
+
+## Version History
+
+### Version 2.0 (November 2025)
+- **ACK System Enhancements**
+  - Verbose ACK tracking with detailed console output
+  - ACK status indicators in messages ({ack} placeholder)
+  - Configurable ACK wait time (default 30s for mesh networks)
+  - ACK confirmation messages sent back to sender
+  - Improved ACK callback registration and error handling
+  
+- **PKI Encryption Features**
+  - Auto-scan and import public keys from mesh nodes
+  - Manual public key entry support
+  - Per-node PKI encryption with fallback to channel encryption
+  - Improved error handling and user feedback
+  
+- **Channel Control**
+  - Configurable channel index to prevent LongFast broadcast
+  - Send to specific channels (default: primary/private channel 0)
+  
+- **SNR Analytics**
+  - All-time SNR statistics tracking per node
+  - Min (cutoff), max (optimal), and average SNR values
+  - Time period tracking (first seen, last seen, duration)
+  - Recent trend analysis (last 10 values)
+  - Persistent storage in snr_stats.json
+  - Reset capability with double confirmation
+  
+- **User Experience Improvements**
+  - Verbose debugging output for troubleshooting
+  - Cleaner countdown display (removed confusing retry messages)
+  - Enhanced menu system with new options
+  - Improved error messages and user guidance
+
+### Version 1.0 (Initial Release)
+- Basic temperature/humidity sensor reading
+- Meshtastic message sending
+- CSV logging
+- Interactive menu system
+- ACK/NAK support
+- Multi-node configuration
+- Customizable templates
+
 ## License
 
 MIT License - Free to use and modify.
+
+## Contributing
+
+Issues and pull requests welcome at: https://github.com/iainonline/meshtastic_weather_works
