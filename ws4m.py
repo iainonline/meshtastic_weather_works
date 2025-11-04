@@ -303,7 +303,8 @@ class AckTracker:
                 destinationId=target_node_id,
                 portNum=portnums_pb2.PortNum.TEXT_MESSAGE_APP,
                 wantAck=False,  # Don't request ACK for ACK confirmation
-                hopLimit=HOP_LIMIT
+                hopLimit=HOP_LIMIT,
+                channelIndex=CHANNEL_INDEX
             )
             
             if packet:
@@ -334,6 +335,7 @@ ACK_WAIT_TIME = 30  # Seconds to wait for ACK confirmation message
 WANT_ACK = False
 MESH_SEND_MODE = 'mesh'  # 'mesh' or 'direct'
 HOP_LIMIT = 3  # Will be set based on MESH_SEND_MODE
+CHANNEL_INDEX = 0  # Channel to send messages on (0 = primary/private, others = secondary/public)
 PKI_ENCRYPTED = False  # Use public key encryption
 PUBLIC_KEYS = {}  # {node_name: base64_encoded_public_key}
 LOG_FILE = 'meshtastic_log.csv'
@@ -350,7 +352,7 @@ def load_config():
     global NODES, SELECTED_NODE_NAME, TARGET_NODE_INT, UPDATE_INTERVAL
     global AUTO_BOOT_TIMEOUT, USB_RECONNECT_INTERVAL, LOG_FILE, AUTO_SAVE_INTERVAL, RETENTION_DAYS
     global MESSAGE_TEMPLATE, MESSAGE_TEMPLATES, ACK_RETRY_TIMEOUT, ACK_WAIT_TIME, WANT_ACK, MESH_SEND_MODE, HOP_LIMIT
-    global PKI_ENCRYPTED, PUBLIC_KEYS
+    global PKI_ENCRYPTED, PUBLIC_KEYS, CHANNEL_INDEX
     
     if not config.read(config_file):
         logger.error(f"Failed to read {config_file}. Using defaults.")
@@ -376,6 +378,7 @@ def load_config():
         MESSAGE_TEMPLATE = config.get('settings', 'message_template', fallback='template1')
         ACK_RETRY_TIMEOUT = config.getint('settings', 'ack_retry_timeout', fallback=60)
         ACK_WAIT_TIME = config.getint('settings', 'ack_wait_time', fallback=30)
+        CHANNEL_INDEX = config.getint('settings', 'channel_index', fallback=0)
         want_ack_str = config.get('settings', 'want_ack', fallback='off').lower()
         WANT_ACK = want_ack_str in ['on', 'true', 'yes', '1']
         
@@ -403,6 +406,7 @@ def load_config():
         MESH_SEND_MODE = 'mesh'
         HOP_LIMIT = 3
         PKI_ENCRYPTED = False
+        CHANNEL_INDEX = 0
     
     # Load public keys for PKI encryption
     if config.has_section('public_keys'):
@@ -1650,6 +1654,7 @@ def send_meshtastic_message(message, snr=None):
                         wantAck=True,
                         onResponse=ack_tracker.on_ack_nak,
                         hopLimit=HOP_LIMIT,
+                        channelIndex=CHANNEL_INDEX,
                         pkiEncrypted=use_pki,
                         publicKey=public_key if use_pki else None
                     )
@@ -1660,6 +1665,7 @@ def send_meshtastic_message(message, snr=None):
                         portNum=portnums_pb2.PortNum.TEXT_MESSAGE_APP,
                         wantAck=False,
                         hopLimit=HOP_LIMIT,
+                        channelIndex=CHANNEL_INDEX,
                         pkiEncrypted=use_pki,
                         publicKey=public_key if use_pki else None
                     )
