@@ -829,6 +829,35 @@ def scan_and_update_public_keys():
             input("\nPress Enter to continue...")
             return
         print("✓ Connected to Meshtastic")
+        print("\n⏳ Waiting 5 seconds for node database to populate...")
+        time.sleep(5)
+    
+    # Check how many nodes are in the database
+    nodes_in_db = 0
+    if hasattr(meshtastic_interface, 'nodes'):
+        nodes_in_db = len(meshtastic_interface.nodes)
+    
+    print(f"\nℹ Nodes in mesh database: {nodes_in_db}")
+    
+    if nodes_in_db == 0:
+        print("\n⚠ WARNING: No nodes found in mesh database!")
+        print("  The device needs to hear from nodes on the mesh first.")
+        print("\nSuggestions:")
+        print("  1. Start the weather station and let it run for a few minutes")
+        print("  2. Send a message to populate the node database")
+        print("  3. Wait for nodes to transmit on the mesh")
+        print("\nYou can still try scanning, but it will likely fail.")
+        
+        try:
+            cont = input("\nContinue anyway? (y/n): ").strip().lower()
+            if cont != 'y':
+                print("Cancelled.")
+                input("\nPress Enter to continue...")
+                return
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            input("\nPress Enter to continue...")
+            return
     
     print("\nThis will scan all configured nodes for their public keys.")
     print("You can choose to:")
@@ -928,8 +957,18 @@ def scan_and_update_public_keys():
         if keys_failed:
             print(f"\n✗ Failed to get keys ({len(keys_failed)}):")
             for name in keys_failed:
-                print(f"  • {name}")
-            print("\nNote: Nodes must be online and have public keys enabled.")
+                node_id = NODES.get(name, 'unknown')
+                print(f"  • {name} (ID: {node_id})")
+            
+            print("\nPossible reasons:")
+            print("  • Nodes not heard on mesh yet (need to receive packets)")
+            print("  • Nodes are offline or out of range")
+            print("  • Nodes don't have PKI encryption enabled")
+            
+            print("\nTo fix 'Not found in mesh':")
+            print("  1. Start the weather station (Main Menu → Option 1)")
+            print("  2. Let it run for a few minutes to populate node database")
+            print("  3. Return to menu and try scanning again")
         
         total_keys = len(PUBLIC_KEYS)
         print(f"\nTotal public keys in config: {total_keys}")
