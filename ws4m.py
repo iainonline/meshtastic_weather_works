@@ -339,6 +339,7 @@ AUTO_SAVE_INTERVAL = 300
 RETENTION_DAYS = 7
 MESSAGE_TEMPLATE = 'template1'
 MESSAGE_TEMPLATES = {}
+LAST_ACK_STATUS = None  # Track last message ACK status: 'A' for ack, 'U' for unack, None for no previous message
 
 def load_config():
     """Load configuration from config.ini file."""
@@ -1311,7 +1312,7 @@ def get_target_node_info(target_node_id):
 
 def format_message(temperature_f, humidity, online_nodes=None, total_nodes=None, snr=None, hops=None):
     """Format message using the configured template."""
-    global MESSAGE_TEMPLATE, MESSAGE_TEMPLATES
+    global MESSAGE_TEMPLATE, MESSAGE_TEMPLATES, LAST_ACK_STATUS
     
     # Get current timestamps
     date = time.strftime("%m/%d")
@@ -1334,6 +1335,9 @@ def format_message(temperature_f, humidity, online_nodes=None, total_nodes=None,
         snr_val = "--"
         hops_val = "--"
     
+    # Add ACK status indicator
+    ack_status = LAST_ACK_STATUS if LAST_ACK_STATUS else ""
+    
     # Get the template
     template = MESSAGE_TEMPLATES.get(MESSAGE_TEMPLATE, MESSAGE_TEMPLATES.get('template1', 
         '{date} {time} ({online}/{total})\\nT: {temp}F {snr} snr/{hops} hop\\nH: {humidity}% {time_detail}'))
@@ -1348,7 +1352,8 @@ def format_message(temperature_f, humidity, online_nodes=None, total_nodes=None,
         temp=int(temperature_f),
         humidity=int(humidity),
         snr=snr_val,
-        hops=hops_val
+        hops=hops_val,
+        ack=ack_status
     )
     
     return message
@@ -1669,7 +1674,7 @@ def main():
 
 def run_weather_station():
     """Run the weather station sensor reading and messaging loop."""
-    global meshtastic_connected, last_csv_save
+    global meshtastic_connected, last_csv_save, LAST_ACK_STATUS
     
     logger.info("=" * 50)
     logger.info("DHT22 Sensor Reader for Raspberry Pi 5")
@@ -2001,9 +2006,16 @@ def run_weather_station():
                                 pending_retry_time = None
                                 pending_message = None
                                 pending_recipients = []
+                                # Update ACK status for next message
+                                LAST_ACK_STATUS = "A"
+                            elif nacked or pending:
+                                # Update ACK status for next message
+                                LAST_ACK_STATUS = "U"
                         else:
                             # ACK disabled - just show message sent
                             print(f"✓ Message sent")
+                            # No ACK tracking when disabled
+                            LAST_ACK_STATUS = None
                         
                         print("=" * 60)
                         
