@@ -402,11 +402,11 @@ def load_config():
         PUBLIC_KEYS = {}
         for name, key_b64 in config.items('public_keys'):
             try:
-                # Store public key as base64 string (Meshtastic API expects this format)
-                PUBLIC_KEYS[name] = key_b64
+                # Decode base64 public key to bytes (Meshtastic API expects bytes)
+                PUBLIC_KEYS[name] = base64.b64decode(key_b64)
                 logger.debug(f"Loaded public key for {name}")
             except Exception as e:
-                logger.warning(f"Failed to load public key for {name}: {e}")
+                logger.warning(f"Failed to decode public key for {name}: {e}")
     else:
         PUBLIC_KEYS = {}
     
