@@ -40,6 +40,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Configure separate ACK debug logger
+ack_logger = logging.getLogger('ack_debug')
+ack_logger.setLevel(logging.DEBUG)
+ack_handler = logging.FileHandler('ack_debug.log')
+ack_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+ack_logger.addHandler(ack_handler)
+ack_logger.propagate = False  # Don't send to root logger
+
 # Global flag for graceful shutdown
 shutdown_requested = False
 menu_requested = False
@@ -184,9 +192,12 @@ class AckTracker:
                 'snr': snr  # Store SNR from original message
             }
             logger.debug(f"Registered message {message_id} for node {node_name} with SNR {snr}")
+            ack_logger.info(f"REGISTER - msg_id: {message_id}, node: {node_name}, snr: {snr}, pending_count: {len(self.pending)}")
     
     def on_ack_nak(self, packet):
         """Callback for ACK/NAK responses from Meshtastic."""
+        ack_logger.info("="*60)
+        ack_logger.info("ACK CALLBACK TRIGGERED")
         try:
             # Handle both dict and protobuf packet formats
             if hasattr(packet, 'get'):
@@ -196,23 +207,33 @@ class AckTracker:
                     request_id = packet.get('id')
                 error_reason = packet.get('decoded', {}).get('routing', {}).get('errorReason', 'NONE')
                 from_node = packet.get('from')
+                ack_logger.debug(f"Packet format: DICT - request_id: {request_id}, from_node: {from_node}, error: {error_reason}")
             else:
                 # Protobuf format
                 try:
                     request_id = packet.decoded.request_id if hasattr(packet.decoded, 'request_id') else packet.id
                     error_reason = packet.decoded.routing.error_reason if hasattr(packet.decoded, 'routing') else 'NONE'
                     from_node = packet.from_id if hasattr(packet, 'from_id') else None
-                except AttributeError:
+                    ack_logger.debug(f"Packet format: PROTOBUF - request_id: {request_id}, from_node: {from_node}, error: {error_reason}")
+                except AttributeError as ae:
                     logger.debug(f"Could not parse packet format: {packet}")
+                    ack_logger.error(f"Parse failed: {ae}, packet: {packet}")
                     return
             
             # Verbose logging for debugging
             logger.info(f"[ACK CALLBACK] Received packet - request_id: {request_id}, from_node: {from_node}, error: {error_reason}")
+            ack_logger.info(f"CALLBACK - request_id: {request_id}, from_node: {from_node}, error: {error_reason}")
+            
+            # Check if this message is tracked
+            is_tracked = request_id in self.pending if request_id else False
+            ack_logger.info(f"Tracking status - request_id: {request_id}, is_tracked: {is_tracked}, pending_count: {len(self.pending)}")
             
             if not request_id or request_id not in self.pending:
                 if request_id:
                     logger.info(f"[ACK CALLBACK] Message {request_id} not in tracking (may have timed out or already processed)")
                     print(f"\n[ACK] Received response for message {request_id} (not currently tracked)")
+                    ack_logger.warning(f"NOT TRACKED - msg_id: {request_id} not in pending messages")
+                    ack_logger.debug(f"Current pending messages: {list(self.pending.keys())}")
                 return
             
             with self.lock:
@@ -220,26 +241,31 @@ class AckTracker:
                 node_name = msg_info['node_name']
                 
                 print(f"\n[ACK] Processing response for message {request_id} to {node_name}")
+                ack_logger.info(f"PROCESSING - msg_id: {request_id}, node: {node_name}")
                 
                 # Check for NAK (error)
                 if error_reason != 'NONE':
                     msg_info['nak_received'] = True
                     logger.warning(f"✗ NAK received from {node_name}: {error_reason}")
                     print(f"✗ NAK received from {node_name}: {error_reason}")
+                    ack_logger.warning(f"NAK - msg_id: {request_id}, node: {node_name}, reason: {error_reason}")
                 else:
                     # Check if it's an implicit ACK or real ACK
                     local_num = meshtastic_interface.localNode.nodeNum if meshtastic_interface and hasattr(meshtastic_interface, 'localNode') else None
                     print(f"[ACK] Checking ACK type - from_node: {from_node}, local_num: {local_num}")
+                    ack_logger.info(f"ACK TYPE CHECK - from_node: {from_node}, local_num: {local_num}")
                     
                     if from_node == local_num:
                         msg_info['impl_ack_received'] = True
                         logger.info(f"⚠ Implicit ACK from {node_name} (packet queued, delivery not guaranteed)")
                         print(f"⚠ Implicit ACK from {node_name} (packet queued locally, delivery not guaranteed)")
+                        ack_logger.info(f"IMPLICIT ACK - msg_id: {request_id}, node: {node_name}, from_node: {from_node}")
                     else:
                         msg_info['ack_received'] = True
                         ack_time = time.strftime("%H:%M:%S")
                         logger.info(f"✓ ACK received from {node_name}")
                         print(f"✓ REAL ACK received from {node_name} at {ack_time}!")
+                        ack_logger.info(f"REAL ACK - msg_id: {request_id}, node: {node_name}, from_node: {from_node}, time: {ack_time}")
                         
                         # Schedule ACK confirmation message (only if WANT_ACK is enabled)
                         if WANT_ACK:
@@ -247,23 +273,32 @@ class AckTracker:
                             threading.Timer(ACK_WAIT_TIME, self.send_ack_confirmation, args=(node_name, snr)).start()
                             logger.info(f"ACK confirmation scheduled for {node_name} in {ACK_WAIT_TIME} seconds")
                             print(f"[ACK] Confirmation message will be sent in {ACK_WAIT_TIME} seconds")
+                            ack_logger.info(f"CONFIRMATION SCHEDULED - node: {node_name}, wait_time: {ACK_WAIT_TIME}s, snr: {snr}")
         
         except Exception as e:
             logger.error(f"Error in ACK/NAK callback: {e}")
+            ack_logger.error(f"CALLBACK EXCEPTION - {type(e).__name__}: {e}")
+            import traceback
+            ack_logger.error(f"Traceback:\n{traceback.format_exc()}")
     
     def get_status(self, message_id):
         """Get the status of a message: 'ack', 'nak', 'impl_ack', or 'pending'."""
         with self.lock:
             if message_id not in self.pending:
+                ack_logger.debug(f"STATUS - msg_id: {message_id}, result: unknown (not in pending)")
                 return 'unknown'
             msg_info = self.pending[message_id]
             if msg_info['ack_received']:
+                ack_logger.debug(f"STATUS - msg_id: {message_id}, result: ack")
                 return 'ack'
             elif msg_info['nak_received']:
+                ack_logger.debug(f"STATUS - msg_id: {message_id}, result: nak")
                 return 'nak'
             elif msg_info['impl_ack_received']:
+                ack_logger.debug(f"STATUS - msg_id: {message_id}, result: impl_ack")
                 return 'impl_ack'
             else:
+                ack_logger.debug(f"STATUS - msg_id: {message_id}, result: pending")
                 return 'pending'
     
     def cleanup_old(self, timeout=60):
@@ -272,10 +307,14 @@ class AckTracker:
             current_time = time.time()
             expired = [msg_id for msg_id, info in self.pending.items() 
                       if current_time - info['timestamp'] > timeout]
+            ack_logger.info(f"CLEANUP - timeout: {timeout}s, expired_count: {len(expired)}, pending_before: {len(self.pending)}")
             for msg_id in expired:
                 node_name = self.pending[msg_id]['node_name']
                 logger.warning(f"Message {msg_id} to {node_name} timed out without ACK")
+                ack_logger.warning(f"TIMEOUT - msg_id: {msg_id}, node: {node_name}, timeout: {timeout}s")
                 del self.pending[msg_id]
+            if expired:
+                ack_logger.info(f"CLEANUP COMPLETE - pending_after: {len(self.pending)}")
     
     def clear(self):
         """Clear all pending messages."""
@@ -287,7 +326,10 @@ class AckTracker:
         try:
             global meshtastic_interface, my_node_id
             
+            ack_logger.info(f"SEND_CONFIRMATION - node: {node_name}, snr: {snr}")
+            
             if not meshtastic_interface or not WANT_ACK:
+                ack_logger.warning(f"SEND_CONFIRMATION SKIPPED - interface: {bool(meshtastic_interface)}, WANT_ACK: {WANT_ACK}")
                 return
             
             # Get the sender node name (our node)
@@ -297,6 +339,7 @@ class AckTracker:
             target_node_id = NODES.get(node_name)
             if not target_node_id:
                 logger.warning(f"Cannot send ACK confirmation: node {node_name} not found in config")
+                ack_logger.error(f"SEND_CONFIRMATION FAILED - node {node_name} not in NODES config")
                 return
             
             # Format the ACK confirmation message
@@ -306,6 +349,7 @@ class AckTracker:
             ack_message = f"{my_node_name} ack\n{date_time}\nSNR: {snr_str}"
             
             logger.info(f"Sending ACK confirmation to {node_name}: {ack_message.replace(chr(10), ' | ')}")
+            ack_logger.info(f"SENDING - to: {node_name}, message: {ack_message.replace(chr(10), ' | ')}")
             
             # Send the ACK confirmation message
             packet = meshtastic_interface.sendData(
@@ -320,11 +364,14 @@ class AckTracker:
             if packet:
                 logger.info(f"✓ ACK confirmation sent to {node_name}")
                 print(f"\n✓ ACK confirmation sent to {node_name}")
+                ack_logger.info(f"SENT SUCCESS - to: {node_name}")
             else:
                 logger.warning(f"Failed to send ACK confirmation to {node_name}")
+                ack_logger.error(f"SENT FAILED - to: {node_name}, packet: None")
                 
         except Exception as e:
             logger.error(f"Error sending ACK confirmation: {e}")
+            ack_logger.error(f"SEND_CONFIRMATION EXCEPTION - {e}")
 
 # Global ACK tracker
 ack_tracker = AckTracker()
@@ -540,11 +587,12 @@ def show_main_menu():
     print("3. Options")
     print("4. Reports")
     print("5. View Sample Message")
-    print("6. Exit")
+    print("6. Nodes Seen This Session")
+    print("7. Exit")
     print("\n" + "="*60)
     
     try:
-        choice = input("\nSelect option (1-6): ").strip()
+        choice = input("\nSelect option (1-7): ").strip()
         return choice
     except (KeyboardInterrupt, EOFError):
         return '6'
@@ -579,10 +627,11 @@ def show_main_menu_with_timeout():
     print("3. Options")
     print("4. Reports")
     print("5. View Sample Message")
-    print("6. Exit")
+    print("6. Nodes Seen This Session")
+    print("7. Exit")
     print("\n" + "="*60)
     print("\nAuto-starting option 1 in 15 seconds...")
-    print("Select option (1-6) or wait: ", end='', flush=True)
+    print("Select option (1-7) or wait: ", end='', flush=True)
     
     # Use select to wait for input with timeout
     old_settings = termios.tcgetattr(sys.stdin)
@@ -602,14 +651,14 @@ def show_main_menu_with_timeout():
                     print()
                     termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
                     return user_input.strip() if user_input.strip() else '1'
-                elif char in '123456':
+                elif char in '1234567':
                     user_input = char
                     print(char, flush=True)
             
             # Update countdown every second - print on same line
             if remaining != last_remaining:
                 last_remaining = remaining
-                print(f"\rAuto-starting option 1 in {remaining} seconds...  Select option (1-6) or wait: {user_input}", end='', flush=True)
+                print(f"\rAuto-starting option 1 in {remaining} seconds...  Select option (1-7) or wait: {user_input}", end='', flush=True)
         
         # Timeout - auto-select option 1
         print("\n\n✓ Auto-starting option 1...")
@@ -1227,6 +1276,134 @@ def show_nodes_seen_report():
         print(f"\n✗ Error reading log file: {e}")
         input("\nPress Enter to continue...")
 
+def show_nodes_seen_this_session():
+    """Display nodes seen this session with auto-refresh every 30 seconds."""
+    if not meshtastic_interface:
+        print("\n✗ Meshtastic interface not connected.")
+        input("\nPress Enter to continue...")
+        return
+    
+    # Track initial node count to detect new nodes
+    initial_nodes = set(meshtastic_interface.nodes.keys())
+    session_start_time = time.time()
+    
+    print("\n" + "="*80)
+    print("NODES SEEN THIS SESSION - Live View (refreshes every 30 seconds)")
+    print("="*80)
+    print("\nPress 'q' and Enter to quit, or wait for auto-refresh...\n")
+    
+    def display_nodes():
+        """Display current nodes in the mesh."""
+        try:
+            current_time = time.time()
+            session_duration = int(current_time - session_start_time)
+            
+            # Get all current nodes
+            all_nodes = meshtastic_interface.nodes
+            current_node_ids = set(all_nodes.keys())
+            
+            # Identify new nodes since session start
+            new_nodes = current_node_ids - initial_nodes
+            
+            # Clear screen area for refresh
+            print("\033[2J\033[H", end='')  # Clear screen and move cursor to top
+            
+            print("="*80)
+            print("NODES SEEN THIS SESSION - Live View")
+            print("="*80)
+            print(f"\nSession Duration: {session_duration // 60}m {session_duration % 60}s")
+            print(f"Total Nodes in Mesh: {len(all_nodes)}")
+            print(f"New Nodes This Session: {len(new_nodes)}")
+            print(f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print("\n" + "-"*80)
+            print(f"{'Node ID':<12} {'Name':<20} {'SNR':<6} {'Hops':<6} {'Last Heard':<20} {'New':<5}")
+            print("-"*80)
+            
+            # Sort nodes by last heard (most recent first)
+            nodes_list = []
+            for node_id, node_info in all_nodes.items():
+                last_heard = node_info.get('lastHeard', 0)
+                nodes_list.append((node_id, node_info, last_heard))
+            
+            nodes_list.sort(key=lambda x: x[2], reverse=True)
+            
+            # Display nodes
+            for node_id, node_info, last_heard in nodes_list:
+                # Extract node information
+                user_info = node_info.get('user', {})
+                if isinstance(user_info, dict):
+                    node_name = user_info.get('longName', 'Unknown')
+                else:
+                    node_name = 'Unknown'
+                
+                snr = node_info.get('snr', 0)
+                hops = node_info.get('hopsAway', 0)
+                
+                # Format last heard time
+                if last_heard:
+                    time_diff = current_time - last_heard
+                    if time_diff < 60:
+                        last_heard_str = f"{int(time_diff)}s ago"
+                    elif time_diff < 3600:
+                        last_heard_str = f"{int(time_diff / 60)}m ago"
+                    elif time_diff < 86400:
+                        last_heard_str = f"{int(time_diff / 3600)}h ago"
+                    else:
+                        last_heard_str = f"{int(time_diff / 86400)}d ago"
+                else:
+                    last_heard_str = "Never"
+                
+                # Mark new nodes
+                is_new = "NEW" if node_id in new_nodes else ""
+                
+                # Truncate long names
+                node_name = node_name[:19] if len(node_name) > 19 else node_name
+                
+                print(f"{node_id:<12} {node_name:<20} {snr:<6.1f} {hops:<6} {last_heard_str:<20} {is_new:<5}")
+            
+            print("="*80)
+            print("\nPress 'q' and Enter to return to menu, or wait 30s for auto-refresh...")
+            
+        except Exception as e:
+            print(f"\n✗ Error displaying nodes: {e}")
+            logger.error(f"Error in show_nodes_seen_this_session: {e}")
+    
+    # Initial display
+    display_nodes()
+    
+    # Auto-refresh loop
+    while True:
+        # Wait for input with timeout
+        old_settings = termios.tcgetattr(sys.stdin)
+        try:
+            tty.setcbreak(sys.stdin.fileno())
+            start_time = time.time()
+            
+            while time.time() - start_time < 30:
+                # Check for input
+                if sys.stdin in select.select([sys.stdin], [], [], 0.1)[0]:
+                    char = sys.stdin.read(1)
+                    if char.lower() == 'q':
+                        # Wait for Enter
+                        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+                        tty.setcbreak(sys.stdin.fileno())
+                        while True:
+                            if sys.stdin in select.select([sys.stdin], [], [], 0.1)[0]:
+                                c = sys.stdin.read(1)
+                                if c == '\n':
+                                    return
+                    elif char == '\n':
+                        # Just refresh on Enter
+                        break
+            
+            # Timeout reached - auto-refresh
+            display_nodes()
+            
+        except (KeyboardInterrupt, EOFError):
+            return
+        finally:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+
 def view_sample_message():
     """Display a sample message with current sensor readings."""
     print("\n" + "="*60)
@@ -1614,9 +1791,16 @@ def init_meshtastic():
             logger.info("ACK/NAK callback registered (want_ack=on)")
             print("[ACK] ACK tracking enabled - callback registered")
             print(f"[ACK] Callback function: {ack_tracker.on_ack_nak}")
+            ack_logger.info("="*60)
+            ack_logger.info("CALLBACK REGISTERED")
+            ack_logger.info(f"Callback function: {ack_tracker.on_ack_nak}")
+            ack_logger.info(f"WANT_ACK: {WANT_ACK}")
+            ack_logger.info(f"Interface: {meshtastic_interface}")
+            ack_logger.info("="*60)
         else:
             logger.info("ACK/NAK callback not registered (want_ack=off)")
             print("[ACK] ACK tracking disabled (want_ack=off)")
+            ack_logger.warning("CALLBACK NOT REGISTERED - WANT_ACK is off")
         
         logger.info("Meshtastic interface initialized successfully")
         return True
@@ -1707,7 +1891,6 @@ def send_meshtastic_message(message, snr=None):
                         destinationId=node_id,
                         portNum=portnums_pb2.PortNum.TEXT_MESSAGE_APP,
                         wantAck=True,
-                        onResponse=ack_tracker.on_ack_nak,
                         hopLimit=HOP_LIMIT,
                         channelIndex=CHANNEL_INDEX,
                         pkiEncrypted=use_pki,
@@ -1909,11 +2092,14 @@ def main():
             # View sample message
             view_sample_message()
         elif choice == '6':
+            # Nodes seen this session
+            show_nodes_seen_this_session()
+        elif choice == '7':
             # Exit
             print("\nExiting program...")
             cleanup_and_exit()
         else:
-            print("\nInvalid option. Please select 1-6.")
+            print("\nInvalid option. Please select 1-7.")
 
 def run_weather_station():
     """Run the weather station sensor reading and messaging loop."""
