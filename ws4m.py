@@ -235,8 +235,8 @@ class AckTracker:
                         # Schedule ACK confirmation message (only if WANT_ACK is enabled)
                         if WANT_ACK:
                             snr = msg_info.get('snr')
-                            threading.Timer(10.0, self.send_ack_confirmation, args=(node_name, snr)).start()
-                            logger.info(f"ACK confirmation scheduled for {node_name} in 10 seconds")
+                            threading.Timer(ACK_WAIT_TIME, self.send_ack_confirmation, args=(node_name, snr)).start()
+                            logger.info(f"ACK confirmation scheduled for {node_name} in {ACK_WAIT_TIME} seconds")
         
         except Exception as e:
             logger.error(f"Error in ACK/NAK callback: {e}")
@@ -330,6 +330,7 @@ UPDATE_INTERVAL = 60
 AUTO_BOOT_TIMEOUT = 10
 USB_RECONNECT_INTERVAL = 10
 ACK_RETRY_TIMEOUT = 60
+ACK_WAIT_TIME = 30  # Seconds to wait for ACK confirmation message
 WANT_ACK = False
 MESH_SEND_MODE = 'mesh'  # 'mesh' or 'direct'
 HOP_LIMIT = 3  # Will be set based on MESH_SEND_MODE
@@ -348,7 +349,7 @@ def load_config():
     """Load configuration from config.ini file."""
     global NODES, SELECTED_NODE_NAME, TARGET_NODE_INT, UPDATE_INTERVAL
     global AUTO_BOOT_TIMEOUT, USB_RECONNECT_INTERVAL, LOG_FILE, AUTO_SAVE_INTERVAL, RETENTION_DAYS
-    global MESSAGE_TEMPLATE, MESSAGE_TEMPLATES, ACK_RETRY_TIMEOUT, WANT_ACK, MESH_SEND_MODE, HOP_LIMIT
+    global MESSAGE_TEMPLATE, MESSAGE_TEMPLATES, ACK_RETRY_TIMEOUT, ACK_WAIT_TIME, WANT_ACK, MESH_SEND_MODE, HOP_LIMIT
     global PKI_ENCRYPTED, PUBLIC_KEYS
     
     if not config.read(config_file):
@@ -374,6 +375,7 @@ def load_config():
         USB_RECONNECT_INTERVAL = config.getint('settings', 'usb_reconnect_interval', fallback=10)
         MESSAGE_TEMPLATE = config.get('settings', 'message_template', fallback='template1')
         ACK_RETRY_TIMEOUT = config.getint('settings', 'ack_retry_timeout', fallback=60)
+        ACK_WAIT_TIME = config.getint('settings', 'ack_wait_time', fallback=30)
         want_ack_str = config.get('settings', 'want_ack', fallback='off').lower()
         WANT_ACK = want_ack_str in ['on', 'true', 'yes', '1']
         
@@ -396,6 +398,7 @@ def load_config():
         SELECTED_NODE_NAME = 'yang'
         MESSAGE_TEMPLATE = 'template1'
         ACK_RETRY_TIMEOUT = 60
+        ACK_WAIT_TIME = 30
         WANT_ACK = False
         MESH_SEND_MODE = 'mesh'
         HOP_LIMIT = 3
@@ -628,11 +631,12 @@ def show_options_menu():
         print(f"7. Toggle PKI Encryption (current: {pki_display})")
         
         print("8. Scan/Update Public Keys")
-        print("9. Back to Main Menu")
+        print(f"9. Change ACK Wait Time (current: {ACK_WAIT_TIME}s)")
+        print("10. Back to Main Menu")
         print("\n" + "="*60)
         
         try:
-            choice = input("\nSelect option (1-9): ").strip()
+            choice = input("\nSelect option (1-10): ").strip()
             
             if choice == '1':
                 show_node_selection_menu()
@@ -651,9 +655,11 @@ def show_options_menu():
             elif choice == '8':
                 scan_and_update_public_keys()
             elif choice == '9':
+                change_ack_wait_time()
+            elif choice == '10':
                 break
             else:
-                print("\nInvalid option. Please select 1-9.")
+                print("\nInvalid option. Please select 1-10.")
         except (KeyboardInterrupt, EOFError):
             break
 
@@ -773,6 +779,41 @@ def toggle_want_ack():
             
     except (KeyboardInterrupt, EOFError):
         print("\nACK setting unchanged.")
+
+def change_ack_wait_time():
+    """Change the ACK wait time setting."""
+    global ACK_WAIT_TIME
+    
+    print("\n" + "="*60)
+    print("ACK WAIT TIME CONFIGURATION")
+    print("="*60)
+    print(f"\nCurrent ACK wait time: {ACK_WAIT_TIME} seconds")
+    print("\nThis is the delay before sending an ACK confirmation message.")
+    print("Recommended: 30-60 seconds for mesh networks (slow propagation)")
+    print("            10-20 seconds for direct communication")
+    print("\n" + "="*60)
+    
+    try:
+        new_wait = input(f"\nEnter new ACK wait time in seconds (current: {ACK_WAIT_TIME}): ").strip()
+        if new_wait:
+            wait_time = int(new_wait)
+            if wait_time < 5:
+                print("⚠ Warning: Wait time less than 5 seconds may be too short for mesh.")
+                confirm = input("Continue anyway? (y/n): ").strip().lower()
+                if confirm != 'y':
+                    print("ACK wait time unchanged.")
+                    return
+            
+            ACK_WAIT_TIME = wait_time
+            if not config.has_section('settings'):
+                config.add_section('settings')
+            config.set('settings', 'ack_wait_time', str(ACK_WAIT_TIME))
+            save_config()
+            print(f"✓ ACK wait time changed to {ACK_WAIT_TIME} seconds")
+    except ValueError:
+        print("Invalid input. ACK wait time unchanged.")
+    except (KeyboardInterrupt, EOFError):
+        print("\nACK wait time unchanged.")
 
 def toggle_pki_encryption():
     """Toggle the PKI encryption setting."""
