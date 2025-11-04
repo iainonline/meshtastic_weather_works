@@ -206,37 +206,47 @@ class AckTracker:
                     logger.debug(f"Could not parse packet format: {packet}")
                     return
             
+            # Verbose logging for debugging
+            logger.info(f"[ACK CALLBACK] Received packet - request_id: {request_id}, from_node: {from_node}, error: {error_reason}")
+            
             if not request_id or request_id not in self.pending:
                 if request_id:
-                    logger.debug(f"Received ACK/NAK for message not in tracking (msg_id: {request_id})")
+                    logger.info(f"[ACK CALLBACK] Message {request_id} not in tracking (may have timed out or already processed)")
+                    print(f"\n[ACK] Received response for message {request_id} (not currently tracked)")
                 return
             
             with self.lock:
                 msg_info = self.pending[request_id]
                 node_name = msg_info['node_name']
                 
+                print(f"\n[ACK] Processing response for message {request_id} to {node_name}")
+                
                 # Check for NAK (error)
                 if error_reason != 'NONE':
                     msg_info['nak_received'] = True
                     logger.warning(f"✗ NAK received from {node_name}: {error_reason}")
-                    print(f"\n✗ NAK received from {node_name}: {error_reason}")
+                    print(f"✗ NAK received from {node_name}: {error_reason}")
                 else:
                     # Check if it's an implicit ACK or real ACK
                     local_num = meshtastic_interface.localNode.nodeNum if meshtastic_interface and hasattr(meshtastic_interface, 'localNode') else None
+                    print(f"[ACK] Checking ACK type - from_node: {from_node}, local_num: {local_num}")
+                    
                     if from_node == local_num:
                         msg_info['impl_ack_received'] = True
                         logger.info(f"⚠ Implicit ACK from {node_name} (packet queued, delivery not guaranteed)")
+                        print(f"⚠ Implicit ACK from {node_name} (packet queued locally, delivery not guaranteed)")
                     else:
                         msg_info['ack_received'] = True
                         ack_time = time.strftime("%H:%M:%S")
                         logger.info(f"✓ ACK received from {node_name}")
-                        print(f"\n✓ ACK received from {node_name} at {ack_time}")
+                        print(f"✓ REAL ACK received from {node_name} at {ack_time}!")
                         
                         # Schedule ACK confirmation message (only if WANT_ACK is enabled)
                         if WANT_ACK:
                             snr = msg_info.get('snr')
                             threading.Timer(ACK_WAIT_TIME, self.send_ack_confirmation, args=(node_name, snr)).start()
                             logger.info(f"ACK confirmation scheduled for {node_name} in {ACK_WAIT_TIME} seconds")
+                            print(f"[ACK] Confirmation message will be sent in {ACK_WAIT_TIME} seconds")
         
         except Exception as e:
             logger.error(f"Error in ACK/NAK callback: {e}")
@@ -1560,8 +1570,11 @@ def init_meshtastic():
         if WANT_ACK:
             meshtastic_interface.acknowledgmentCallback = ack_tracker.on_ack_nak
             logger.info("ACK/NAK callback registered (want_ack=on)")
+            print("[ACK] ACK tracking enabled - callback registered")
+            print(f"[ACK] Callback function: {ack_tracker.on_ack_nak}")
         else:
             logger.info("ACK/NAK callback not registered (want_ack=off)")
+            print("[ACK] ACK tracking disabled (want_ack=off)")
         
         logger.info("Meshtastic interface initialized successfully")
         return True
@@ -1678,13 +1691,17 @@ def send_meshtastic_message(message, snr=None):
                         ack_tracker.register_message(message_id, name, snr)
                         message_ids[message_id] = name
                         logger.info(f"✓ Message queued for {name} (ID: {node_id}, msg_id: {message_id})")
+                        print(f"\n[ACK] Message {message_id} sent to {name}, waiting for ACK...")
+                        print(f"[ACK] Callback registered: {ack_tracker.on_ack_nak}")
                         success_count += 1
                     except AttributeError:
                         # Fallback if packet doesn't have id attribute
                         logger.info(f"✓ Message queued for {name} (ID: {node_id})")
+                        print(f"\n[ACK] Message sent to {name}, but couldn't get message ID for tracking")
                         success_count += 1
                 elif packet:
                     logger.info(f"✓ Message sent to {name} (ID: {node_id}, no ACK requested)")
+                    print(f"\n[INFO] Message sent to {name} (ACK not requested)")
                     success_count += 1
                 else:
                     logger.info(f"✓ Message queued for {name} (ID: {node_id})")
@@ -2142,6 +2159,9 @@ def run_weather_station():
                             # Record ACK time and display status
                             ack_time = time.strftime("%H:%M:%S")
                             
+                            print("\n[ACK] Checking ACK status after 5-second wait...")
+                            print(f"[ACK] Tracking {len(current_msg_ids)} messages: {list(current_msg_ids.keys())}")
+                            
                             # Re-check final status - only for messages sent in this batch
                             acked = []
                             nacked = []
@@ -2149,6 +2169,7 @@ def run_weather_station():
                             
                             for msg_id, node_name in current_msg_ids.items():
                                 status = ack_tracker.get_status(msg_id)
+                                print(f"[ACK] Message {msg_id} to {node_name}: {status}")
                                 if status == 'ack':
                                     acked.append(node_name)
                                 elif status == 'nak':
@@ -2175,6 +2196,7 @@ def run_weather_station():
                             
                             if pending:
                                 print(f"⏳ Pending response from: {', '.join(pending)}")
+                                print(f"[ACK] Still waiting for ACK from {len(pending)} node(s)")
                                 # Set retry timer
                                 pending_retry_time = time.time() + ACK_RETRY_TIMEOUT
                                 pending_message = message
@@ -2183,6 +2205,7 @@ def run_weather_station():
                             
                             if not acked and not nacked and not pending:
                                 print("⚠ No acknowledgments received")
+                                print("[ACK] All tracked messages appear to have no response (timeout or not tracked)")
                                 # Clear any pending retry since nothing is pending
                                 pending_retry_time = None
                                 pending_message = None
