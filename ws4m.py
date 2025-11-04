@@ -942,7 +942,7 @@ def scan_and_update_public_keys():
                         print(f" ✓ Added")
                         keys_added.append(node_name)
                 else:
-                    print(f" ✗ No public key available")
+                    print(f" ✗ No public key available (PKI not enabled on node)")
                     keys_failed.append(node_name)
                     
             except Exception as e:
@@ -982,14 +982,16 @@ def scan_and_update_public_keys():
                 print(f"  • {name} (ID: {node_id})")
             
             print("\nPossible reasons:")
-            print("  • Nodes not heard on mesh yet (need to receive packets)")
+            print("  • Nodes don't have PKI encryption enabled (most common)")
             print("  • Nodes are offline or out of range")
-            print("  • Nodes don't have PKI encryption enabled")
+            print("  • Nodes not heard on mesh yet (need to receive packets)")
             
-            print("\nTo fix 'Not found in mesh':")
-            print("  1. Start the weather station (Main Menu → Option 1)")
-            print("  2. Let it run for a few minutes to populate node database")
-            print("  3. Return to menu and try scanning again")
+            print("\nTo enable PKI on nodes:")
+            print("  Run on each node: meshtastic --set security.public_key true")
+            print("  Or via app: Settings → Security → Enable 'Public Key'")
+            
+            print("\nNote: PKI encryption requires firmware 2.0+ and may not be")
+            print("      available on all devices. Check Meshtastic documentation.")
         
         total_keys = len(PUBLIC_KEYS)
         print(f"\nTotal public keys in config: {total_keys}")
