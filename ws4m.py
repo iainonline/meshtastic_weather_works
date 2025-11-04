@@ -2100,7 +2100,7 @@ def run_weather_station():
                             pending_retry_time = time.time() + ACK_RETRY_TIMEOUT
                             pending_message = retry_message
                             pending_recipients = pending
-                            logger.info(f"Will retry again in {ACK_RETRY_TIMEOUT} seconds at {time.strftime('%H:%M:%S', time.localtime(pending_retry_time))}")
+                            logger.debug(f"Will retry again in {ACK_RETRY_TIMEOUT} seconds at {time.strftime('%H:%M:%S', time.localtime(pending_retry_time))}")
                         else:
                             # All resolved
                             pending_retry_time = None
@@ -2243,7 +2243,7 @@ def run_weather_station():
                                 pending_retry_time = time.time() + ACK_RETRY_TIMEOUT
                                 pending_message = message
                                 pending_recipients = pending
-                                logger.info(f"Will retry in {ACK_RETRY_TIMEOUT} seconds at {time.strftime('%H:%M:%S', time.localtime(pending_retry_time))}")
+                                logger.debug(f"Will retry in {ACK_RETRY_TIMEOUT} seconds at {time.strftime('%H:%M:%S', time.localtime(pending_retry_time))}")
                             
                             if not acked and not nacked and not pending:
                                 print("⚠ No acknowledgments received")
