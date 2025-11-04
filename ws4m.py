@@ -27,6 +27,7 @@ import os
 import atexit
 import threading
 import base64
+import json
 
 # Configure logging
 logging.basicConfig(
@@ -340,6 +341,8 @@ RETENTION_DAYS = 7
 MESSAGE_TEMPLATE = 'template1'
 MESSAGE_TEMPLATES = {}
 LAST_ACK_STATUS = None  # Track last message ACK status: 'A' for ack, 'U' for unack, None for no previous message
+SNR_STATS_FILE = 'snr_stats.json'  # File to track SNR statistics per node
+SNR_STATS = {}  # {node_name: {'min': float, 'max': float, 'avg': float, 'count': int, 'recent': [float]}}
 
 def load_config():
     """Load configuration from config.ini file."""
@@ -1013,6 +1016,55 @@ def show_menu():
     """Deprecated - kept for compatibility. Use show_node_selection_menu instead."""
     show_node_selection_menu()
 
+def show_snr_stats_report():
+    """Display SNR statistics for all nodes."""
+    if not SNR_STATS:
+        print("\n" + "="*70)
+        print("SNR STATISTICS")
+        print("="*70)
+        print("\nNo SNR statistics available yet.")
+        print("Statistics will be collected as messages are received.")
+        print("\n" + "="*70)
+        input("\nPress Enter to continue...")
+        return
+    
+    print("\n" + "="*80)
+    print("SNR STATISTICS (Signal-to-Noise Ratio)")
+    print("="*80)
+    print("\nMin SNR = Cutoff (weakest signal seen)")
+    print("Max SNR = Optimal (strongest signal seen)")
+    print("\n" + "-"*80)
+    print(f"{'Node Name':<20} {'Min (Cutoff)':<15} {'Max (Optimal)':<15} {'Average':<10} {'Count':<10}")
+    print("-"*80)
+    
+    # Sort nodes alphabetically
+    for node_name in sorted(SNR_STATS.keys()):
+        stats = SNR_STATS[node_name]
+        min_snr = stats.get('min', 'N/A')
+        max_snr = stats.get('max', 'N/A')
+        avg_snr = stats.get('avg', 'N/A')
+        count = stats.get('count', 0)
+        
+        # Format SNR values
+        min_str = f"{min_snr:.1f} dB" if isinstance(min_snr, (int, float)) else min_snr
+        max_str = f"{max_snr:.1f} dB" if isinstance(max_snr, (int, float)) else max_snr
+        avg_str = f"{avg_snr:.1f} dB" if isinstance(avg_snr, (int, float)) else avg_snr
+        
+        print(f"{node_name:<20} {min_str:<15} {max_str:<15} {avg_str:<10} {count:<10}")
+        
+        # Show recent trend (last 10 values)
+        recent = stats.get('recent', [])
+        if recent:
+            recent_10 = recent[-10:]
+            recent_str = ', '.join([f"{val:.1f}" for val in recent_10])
+            print(f"  Recent trend: {recent_str}")
+    
+    print("="*80)
+    print(f"\nTotal nodes tracked: {len(SNR_STATS)}")
+    print(f"Statistics file: {SNR_STATS_FILE}")
+    print("\n" + "="*80)
+    input("\nPress Enter to continue...")
+
 def show_reports_menu():
     """Display reports menu."""
     while True:
@@ -1020,18 +1072,21 @@ def show_reports_menu():
         print("REPORTS MENU")
         print("="*60)
         print("\n1. List of Nodes Seen")
-        print("2. Back to Main Menu")
+        print("2. SNR Statistics")
+        print("3. Back to Main Menu")
         print("\n" + "="*60)
         
         try:
-            choice = input("\nSelect option (1-2): ").strip()
+            choice = input("\nSelect option (1-3): ").strip()
             
             if choice == '1':
                 show_nodes_seen_report()
             elif choice == '2':
+                show_snr_stats_report()
+            elif choice == '3':
                 break
             else:
-                print("\nInvalid option. Please select 1-2.")
+                print("\nInvalid option. Please select 1-3.")
         except (KeyboardInterrupt, EOFError):
             break
 
@@ -1253,6 +1308,76 @@ def cleanup_old_logs():
     except Exception as e:
         logger.error(f"Error cleaning up old logs: {e}")
 
+def load_snr_stats():
+    """Load SNR statistics from JSON file."""
+    global SNR_STATS
+    
+    if not os.path.exists(SNR_STATS_FILE):
+        SNR_STATS = {}
+        return
+    
+    try:
+        with open(SNR_STATS_FILE, 'r') as f:
+            SNR_STATS = json.load(f)
+        logger.debug(f"Loaded SNR stats for {len(SNR_STATS)} nodes")
+    except Exception as e:
+        logger.error(f"Error loading SNR stats: {e}")
+        SNR_STATS = {}
+
+def save_snr_stats():
+    """Save SNR statistics to JSON file."""
+    global SNR_STATS
+    
+    try:
+        with open(SNR_STATS_FILE, 'w') as f:
+            json.dump(SNR_STATS, f, indent=2)
+        logger.debug(f"Saved SNR stats for {len(SNR_STATS)} nodes")
+    except Exception as e:
+        logger.error(f"Error saving SNR stats: {e}")
+
+def update_snr_stats(node_name, snr):
+    """
+    Update SNR statistics for a node.
+    Tracks min, max, average, and recent SNR values.
+    
+    Args:
+        node_name: Name of the node
+        snr: Current SNR value
+    """
+    global SNR_STATS
+    
+    if snr is None:
+        return
+    
+    if node_name not in SNR_STATS:
+        SNR_STATS[node_name] = {
+            'min': snr,
+            'max': snr,
+            'avg': snr,
+            'count': 1,
+            'recent': [snr]
+        }
+    else:
+        stats = SNR_STATS[node_name]
+        
+        # Update min/max
+        stats['min'] = min(stats['min'], snr)
+        stats['max'] = max(stats['max'], snr)
+        
+        # Update running average
+        total = stats['avg'] * stats['count']
+        stats['count'] += 1
+        stats['avg'] = (total + snr) / stats['count']
+        
+        # Keep last 100 recent values for trend analysis
+        stats['recent'].append(snr)
+        if len(stats['recent']) > 100:
+            stats['recent'].pop(0)
+    
+    # Save periodically (every 10 updates)
+    if SNR_STATS[node_name]['count'] % 10 == 0:
+        save_snr_stats()
+
 def get_node_stats():
     """Get online and total node count from Meshtastic interface."""
     global meshtastic_interface
@@ -1301,6 +1426,18 @@ def get_target_node_info(target_node_id):
             
             # Get hops away
             hops = node_info.get('hopsAway', None)
+            
+            # Update SNR statistics if we have a node name
+            if snr is not None:
+                # Find node name from ID
+                node_name = None
+                for name, nid in NODES.items():
+                    if nid == target_node_id:
+                        node_name = name
+                        break
+                
+                if node_name:
+                    update_snr_stats(node_name, snr)
             
             return snr, hops
         else:
@@ -1688,6 +1825,9 @@ def run_weather_station():
     # Initialize CSV log
     init_csv_log()
     cleanup_old_logs()
+    
+    # Load SNR statistics
+    load_snr_stats()
     
     # Set terminal to non-blocking input mode
     old_settings = termios.tcgetattr(sys.stdin)
