@@ -1084,10 +1084,10 @@ def show_snr_stats_report():
         return
     
     print("\n" + "="*80)
-    print("SNR STATISTICS (Signal-to-Noise Ratio)")
+    print("SNR STATISTICS (Signal-to-Noise Ratio) - ALL TIME")
     print("="*80)
-    print("\nMin SNR = Cutoff (weakest signal seen)")
-    print("Max SNR = Optimal (strongest signal seen)")
+    print("\nMin SNR = Cutoff (weakest signal ever seen)")
+    print("Max SNR = Optimal (strongest signal ever seen)")
     print("\n" + "-"*80)
     print(f"{'Node Name':<20} {'Min (Cutoff)':<15} {'Max (Optimal)':<15} {'Average':<10} {'Count':<10}")
     print("-"*80)
@@ -1099,6 +1099,8 @@ def show_snr_stats_report():
         max_snr = stats.get('max', 'N/A')
         avg_snr = stats.get('avg', 'N/A')
         count = stats.get('count', 0)
+        first_seen = stats.get('first_seen')
+        last_seen = stats.get('last_seen')
         
         # Format SNR values
         min_str = f"{min_snr:.1f} dB" if isinstance(min_snr, (int, float)) else min_snr
@@ -1106,6 +1108,14 @@ def show_snr_stats_report():
         avg_str = f"{avg_snr:.1f} dB" if isinstance(avg_snr, (int, float)) else avg_snr
         
         print(f"{node_name:<20} {min_str:<15} {max_str:<15} {avg_str:<10} {count:<10}")
+        
+        # Show time period
+        if first_seen and last_seen:
+            first_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(first_seen))
+            last_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(last_seen))
+            duration = last_seen - first_seen
+            duration_str = f"{int(duration/3600)}h {int((duration%3600)/60)}m" if duration >= 3600 else f"{int(duration/60)}m"
+            print(f"  Period: {first_str} to {last_str} (span: {duration_str})")
         
         # Show recent trend (last 10 values)
         recent = stats.get('recent', [])
@@ -1117,8 +1127,33 @@ def show_snr_stats_report():
     print("="*80)
     print(f"\nTotal nodes tracked: {len(SNR_STATS)}")
     print(f"Statistics file: {SNR_STATS_FILE}")
+    print("\nNote: These are all-time statistics since last reset.")
     print("\n" + "="*80)
-    input("\nPress Enter to continue...")
+    
+    # Offer reset option
+    try:
+        choice = input("\nReset all statistics? (y/n): ").strip().lower()
+        if choice == 'y':
+            confirm = input("Are you sure? This cannot be undone (y/n): ").strip().lower()
+            if confirm == 'y':
+                reset_snr_stats()
+                print("\n✓ SNR statistics have been reset")
+                input("\nPress Enter to continue...")
+            else:
+                print("\nReset cancelled")
+                input("\nPress Enter to continue...")
+        else:
+            input("\nPress Enter to continue...")
+    except (KeyboardInterrupt, EOFError):
+        print("\n")
+
+def reset_snr_stats():
+    """Reset all SNR statistics."""
+    global SNR_STATS
+    SNR_STATS = {}
+    save_snr_stats()
+    logger.info("SNR statistics reset")
+    print("[SNR] All statistics cleared")
 
 def show_reports_menu():
     """Display reports menu."""
@@ -1393,7 +1428,7 @@ def save_snr_stats():
 def update_snr_stats(node_name, snr):
     """
     Update SNR statistics for a node.
-    Tracks min, max, average, and recent SNR values.
+    Tracks min, max, average, recent SNR values, and timestamps.
     
     Args:
         node_name: Name of the node
@@ -1404,13 +1439,17 @@ def update_snr_stats(node_name, snr):
     if snr is None:
         return
     
+    current_time = time.time()
+    
     if node_name not in SNR_STATS:
         SNR_STATS[node_name] = {
             'min': snr,
             'max': snr,
             'avg': snr,
             'count': 1,
-            'recent': [snr]
+            'recent': [snr],
+            'first_seen': current_time,
+            'last_seen': current_time
         }
     else:
         stats = SNR_STATS[node_name]
@@ -1428,6 +1467,9 @@ def update_snr_stats(node_name, snr):
         stats['recent'].append(snr)
         if len(stats['recent']) > 100:
             stats['recent'].pop(0)
+        
+        # Update last seen time
+        stats['last_seen'] = current_time
     
     # Save periodically (every 10 updates)
     if SNR_STATS[node_name]['count'] % 10 == 0:
