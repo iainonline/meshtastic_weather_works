@@ -901,16 +901,24 @@ def scan_and_update_public_keys():
             
             try:
                 # Get node info from Meshtastic
-                # Try both integer and string keys
+                # Meshtastic stores node IDs as hex strings with ! prefix
+                # Convert decimal to hex format: 2658499212 -> !9e757a8c
+                node_id_hex = f"!{node_id:08x}"
+                
                 node = None
                 if hasattr(meshtastic_interface, 'nodes'):
-                    if node_id in meshtastic_interface.nodes:
+                    # Try hex format (most common)
+                    if node_id_hex in meshtastic_interface.nodes:
+                        node = meshtastic_interface.nodes[node_id_hex]
+                    # Fallback: try integer
+                    elif node_id in meshtastic_interface.nodes:
                         node = meshtastic_interface.nodes[node_id]
+                    # Fallback: try string decimal
                     elif str(node_id) in meshtastic_interface.nodes:
                         node = meshtastic_interface.nodes[str(node_id)]
                 
                 if not node:
-                    print(f" ✗ Not found in mesh (searched for {node_id})")
+                    print(f" ✗ Not found in mesh (searched for {node_id_hex})")
                     keys_failed.append(node_name)
                     continue
                 
