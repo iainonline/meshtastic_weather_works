@@ -399,15 +399,14 @@ def load_config():
     
     # Load public keys for PKI encryption
     if config.has_section('public_keys'):
-        import base64
         PUBLIC_KEYS = {}
         for name, key_b64 in config.items('public_keys'):
             try:
-                # Decode base64 public key
-                PUBLIC_KEYS[name] = base64.b64decode(key_b64)
+                # Store public key as base64 string (Meshtastic API expects this format)
+                PUBLIC_KEYS[name] = key_b64
                 logger.debug(f"Loaded public key for {name}")
             except Exception as e:
-                logger.warning(f"Failed to decode public key for {name}: {e}")
+                logger.warning(f"Failed to load public key for {name}: {e}")
     else:
         PUBLIC_KEYS = {}
     
@@ -1453,7 +1452,7 @@ def send_meshtastic_message(message, snr=None):
                 if PKI_ENCRYPTED:
                     public_key = PUBLIC_KEYS.get(name)
                     if public_key:
-                        logger.debug(f"Using PKI encryption for {name}")
+                        logger.info(f"Using PKI encryption for {name} with public key")
                         use_pki = True
                     else:
                         logger.warning(f"PKI encryption enabled but no public key found for {name}, using channel encryption")
