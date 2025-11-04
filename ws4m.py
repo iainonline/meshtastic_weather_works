@@ -883,6 +883,13 @@ def scan_and_update_public_keys():
         keys_failed = []
         keys_skipped = []
         
+        # Debug: Show what's in the nodes database
+        if hasattr(meshtastic_interface, 'nodes'):
+            print(f"\nDebug - Node IDs in database (first 5):")
+            for idx, node_key in enumerate(list(meshtastic_interface.nodes.keys())[:5]):
+                print(f"  {idx+1}. {node_key} (type: {type(node_key).__name__})")
+            print()
+        
         for node_name, node_id in NODES.items():
             # Check if we should skip this node
             if node_name in PUBLIC_KEYS and not update_existing:
@@ -894,12 +901,18 @@ def scan_and_update_public_keys():
             
             try:
                 # Get node info from Meshtastic
-                if not hasattr(meshtastic_interface, 'nodes') or node_id not in meshtastic_interface.nodes:
-                    print(f" ✗ Not found in mesh")
+                # Try both integer and string keys
+                node = None
+                if hasattr(meshtastic_interface, 'nodes'):
+                    if node_id in meshtastic_interface.nodes:
+                        node = meshtastic_interface.nodes[node_id]
+                    elif str(node_id) in meshtastic_interface.nodes:
+                        node = meshtastic_interface.nodes[str(node_id)]
+                
+                if not node:
+                    print(f" ✗ Not found in mesh (searched for {node_id})")
                     keys_failed.append(node_name)
                     continue
-                
-                node = meshtastic_interface.nodes[node_id]
                 
                 # Check if node has a public key
                 if hasattr(node, 'user') and hasattr(node.user, 'publicKey') and node.user.publicKey:
