@@ -12,6 +12,7 @@ import meshtastic
 import meshtastic.serial_interface
 import meshtastic.remote_hardware
 from meshtastic import portnums_pb2
+from pubsub import pub
 import configparser
 import logging
 from datetime import datetime, timedelta
@@ -101,6 +102,9 @@ def cleanup_and_exit():
         except Exception as e:
             logger.debug(f"DHT22 cleanup note: {e}")
     
+    # Close session logging
+    close_session_logging()
+    
     logger.info("Goodbye!")
     sys.exit(0)
 
@@ -118,6 +122,16 @@ def time_limit(seconds):
         yield
     finally:
         signal.alarm(0)
+
+def input_with_timeout(prompt, timeout=10):
+    """Get user input with a timeout. Returns None if timeout expires."""
+    print(prompt, end='', flush=True)
+    ready, _, _ = select.select([sys.stdin], [], [], timeout)
+    if ready:
+        return sys.stdin.readline().strip()
+    else:
+        print()  # Move to next line after timeout
+        return None
 
 # Initialize the DHT22 sensor on GPIO4 (Pin 7)
 # For other GPIO pins, use: board.D18, board.D22, board.D23, etc.
@@ -179,6 +193,11 @@ class AckTracker:
     def __init__(self):
         self.pending = {}  # {message_id: {'node_name': name, 'ack_received': False, 'nak_received': False, 'snr': value}}
         self.lock = threading.Lock()
+        # Running totals
+        self.total_acks = 0
+        self.total_implicit_acks = 0
+        self.total_naks = 0
+        self.total_timeouts = 0
     
     def register_message(self, message_id, node_name, snr=None):
         """Register a sent message awaiting acknowledgment."""
@@ -246,9 +265,12 @@ class AckTracker:
                 # Check for NAK (error)
                 if error_reason != 'NONE':
                     msg_info['nak_received'] = True
+                    self.total_naks += 1
                     logger.warning(f"✗ NAK received from {node_name}: {error_reason}")
                     print(f"✗ NAK received from {node_name}: {error_reason}")
+                    print(f"   Total: {self.total_acks} ACKs | {self.total_implicit_acks} Implicit | {self.total_naks} NAKs | {self.total_timeouts} Timeouts")
                     ack_logger.warning(f"NAK - msg_id: {request_id}, node: {node_name}, reason: {error_reason}")
+                    log_session_failure(node_name, request_id, f"NAK: {error_reason}")
                 else:
                     # Check if it's an implicit ACK or real ACK
                     local_num = meshtastic_interface.localNode.nodeNum if meshtastic_interface and hasattr(meshtastic_interface, 'localNode') else None
@@ -257,15 +279,21 @@ class AckTracker:
                     
                     if from_node == local_num:
                         msg_info['impl_ack_received'] = True
+                        self.total_implicit_acks += 1
                         logger.info(f"⚠ Implicit ACK from {node_name} (packet queued, delivery not guaranteed)")
                         print(f"⚠ Implicit ACK from {node_name} (packet queued locally, delivery not guaranteed)")
+                        print(f"   Total: {self.total_acks} ACKs | {self.total_implicit_acks} Implicit | {self.total_naks} NAKs | {self.total_timeouts} Timeouts")
                         ack_logger.info(f"IMPLICIT ACK - msg_id: {request_id}, node: {node_name}, from_node: {from_node}")
+                        log_session_ack(node_name, request_id, 'implicit')
                     else:
                         msg_info['ack_received'] = True
+                        self.total_acks += 1
                         ack_time = time.strftime("%H:%M:%S")
                         logger.info(f"✓ ACK received from {node_name}")
                         print(f"✓ REAL ACK received from {node_name} at {ack_time}!")
+                        print(f"   Total: {self.total_acks} ACKs | {self.total_implicit_acks} Implicit | {self.total_naks} NAKs | {self.total_timeouts} Timeouts")
                         ack_logger.info(f"REAL ACK - msg_id: {request_id}, node: {node_name}, from_node: {from_node}, time: {ack_time}")
+                        log_session_ack(node_name, request_id, 'real')
                         
                         # Schedule ACK confirmation message (only if WANT_ACK is enabled)
                         if WANT_ACK:
@@ -310,8 +338,10 @@ class AckTracker:
             ack_logger.info(f"CLEANUP - timeout: {timeout}s, expired_count: {len(expired)}, pending_before: {len(self.pending)}")
             for msg_id in expired:
                 node_name = self.pending[msg_id]['node_name']
+                self.total_timeouts += 1
                 logger.warning(f"Message {msg_id} to {node_name} timed out without ACK")
                 ack_logger.warning(f"TIMEOUT - msg_id: {msg_id}, node: {node_name}, timeout: {timeout}s")
+                log_session_failure(node_name, msg_id, 'timeout')
                 del self.pending[msg_id]
             if expired:
                 ack_logger.info(f"CLEANUP COMPLETE - pending_after: {len(self.pending)}")
@@ -403,6 +433,193 @@ MESSAGE_TEMPLATES = {}
 LAST_ACK_STATUS = None  # Track last message ACK status: 'A' for ack, 'U' for unack, None for no previous message
 SNR_STATS_FILE = 'snr_stats.json'  # File to track SNR statistics per node
 SNR_STATS = {}  # {node_name: {'min': float, 'max': float, 'avg': float, 'count': int, 'recent': [float]}}
+
+# Session logging variables
+SESSION_NAME = None
+SESSION_START_TIME = None
+SESSION_LOG_FILE = None
+SESSION_LOGGER = None
+SESSION_STATS = {
+    'messages_sent': 0,
+    'messages_acked': 0,
+    'messages_failed': 0,
+    'nodes_contacted': {},  # {node_name: {'sent': count, 'acked': count, 'failed': count}}
+    'errors': []
+}
+LAST_SESSION_SAVE = None
+SESSION_SAVE_INTERVAL = 300  # Save session log every 5 minutes
+
+def init_session_logging(session_name=None):
+    """Initialize session-based logging with a custom or auto-generated name."""
+    global SESSION_NAME, SESSION_START_TIME, SESSION_LOG_FILE, SESSION_LOGGER
+    global SESSION_STATS, LAST_SESSION_SAVE
+    
+    # Generate session name if not provided
+    if not session_name:
+        SESSION_NAME = datetime.now().strftime("session_%Y%m%d_%H%M%S")
+    else:
+        SESSION_NAME = session_name
+    
+    SESSION_START_TIME = datetime.now()
+    
+    # Create sessions directory if it doesn't exist
+    os.makedirs('sessions', exist_ok=True)
+    
+    # Create session log file
+    SESSION_LOG_FILE = f'sessions/{SESSION_NAME}.log'
+    
+    # Configure session logger
+    SESSION_LOGGER = logging.getLogger(f'session_{SESSION_NAME}')
+    SESSION_LOGGER.setLevel(logging.INFO)
+    session_handler = logging.FileHandler(SESSION_LOG_FILE)
+    session_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    SESSION_LOGGER.addHandler(session_handler)
+    SESSION_LOGGER.propagate = False
+    
+    # Reset session stats
+    SESSION_STATS = {
+        'messages_sent': 0,
+        'messages_acked': 0,
+        'messages_failed': 0,
+        'nodes_contacted': {},
+        'errors': []
+    }
+    LAST_SESSION_SAVE = time.time()
+    
+    # Write session header
+    SESSION_LOGGER.info("="*80)
+    SESSION_LOGGER.info(f"SESSION STARTED: {SESSION_NAME}")
+    SESSION_LOGGER.info(f"Start Time: {SESSION_START_TIME.strftime('%Y-%m-%d %H:%M:%S')}")
+    SESSION_LOGGER.info(f"Connected Node: {my_node_id}")
+    SESSION_LOGGER.info(f"Target Nodes: {NODES}")
+    SESSION_LOGGER.info(f"Update Interval: {UPDATE_INTERVAL}s")
+    SESSION_LOGGER.info(f"Mesh Mode: {MESH_SEND_MODE} (hop_limit={HOP_LIMIT})")
+    SESSION_LOGGER.info(f"ACK Tracking: {'ON' if WANT_ACK else 'OFF'}")
+    SESSION_LOGGER.info(f"PKI Encryption: {'ON' if PKI_ENCRYPTED else 'OFF'}")
+    SESSION_LOGGER.info("="*80)
+    
+    logger.info(f"Session logging initialized: {SESSION_NAME}")
+    print(f"\n[SESSION] Logging to: sessions/{SESSION_NAME}.log")
+    print(f"[SESSION] Auto-save every {SESSION_SAVE_INTERVAL} seconds")
+
+def save_session_summary():
+    """Save session summary to the session log file."""
+    global SESSION_STATS, LAST_SESSION_SAVE
+    
+    if not SESSION_LOGGER:
+        return
+    
+    LAST_SESSION_SAVE = time.time()
+    
+    # Calculate session duration
+    duration = datetime.now() - SESSION_START_TIME
+    duration_str = str(duration).split('.')[0]  # Remove microseconds
+    
+    # Write summary
+    SESSION_LOGGER.info("")
+    SESSION_LOGGER.info("="*80)
+    SESSION_LOGGER.info("SESSION SUMMARY (Auto-save)")
+    SESSION_LOGGER.info("="*80)
+    SESSION_LOGGER.info(f"Session Name: {SESSION_NAME}")
+    SESSION_LOGGER.info(f"Duration: {duration_str}")
+    SESSION_LOGGER.info(f"Messages Sent: {SESSION_STATS['messages_sent']}")
+    SESSION_LOGGER.info(f"Messages ACKed: {SESSION_STATS['messages_acked']}")
+    SESSION_LOGGER.info(f"Messages Failed: {SESSION_STATS['messages_failed']}")
+    
+    if SESSION_STATS['messages_sent'] > 0:
+        ack_rate = (SESSION_STATS['messages_acked'] / SESSION_STATS['messages_sent']) * 100
+        SESSION_LOGGER.info(f"ACK Success Rate: {ack_rate:.1f}%")
+    
+    SESSION_LOGGER.info("")
+    SESSION_LOGGER.info("Per-Node Statistics:")
+    for node_name, stats in SESSION_STATS['nodes_contacted'].items():
+        SESSION_LOGGER.info(f"  {node_name}:")
+        SESSION_LOGGER.info(f"    Sent: {stats['sent']}")
+        SESSION_LOGGER.info(f"    ACKed: {stats['acked']}")
+        SESSION_LOGGER.info(f"    Failed: {stats['failed']}")
+        if stats['sent'] > 0:
+            node_ack_rate = (stats['acked'] / stats['sent']) * 100
+            SESSION_LOGGER.info(f"    Success Rate: {node_ack_rate:.1f}%")
+    
+    if SESSION_STATS['errors']:
+        SESSION_LOGGER.info("")
+        SESSION_LOGGER.info(f"Errors Encountered: {len(SESSION_STATS['errors'])}")
+        for i, error in enumerate(SESSION_STATS['errors'][-10:], 1):  # Last 10 errors
+            SESSION_LOGGER.info(f"  {i}. {error}")
+    
+    SESSION_LOGGER.info("="*80)
+    SESSION_LOGGER.info("")
+
+def log_session_message(node_name, message_id, status='sent'):
+    """Log a message event to the session log."""
+    if not SESSION_LOGGER:
+        return
+    
+    SESSION_STATS['messages_sent'] += 1
+    
+    if node_name not in SESSION_STATS['nodes_contacted']:
+        SESSION_STATS['nodes_contacted'][node_name] = {'sent': 0, 'acked': 0, 'failed': 0}
+    
+    SESSION_STATS['nodes_contacted'][node_name]['sent'] += 1
+    
+    SESSION_LOGGER.info(f"[MESSAGE SENT] To: {node_name}, ID: {message_id}")
+
+def log_session_ack(node_name, message_id, ack_type='real'):
+    """Log an ACK event to the session log."""
+    if not SESSION_LOGGER:
+        return
+    
+    SESSION_STATS['messages_acked'] += 1
+    
+    if node_name in SESSION_STATS['nodes_contacted']:
+        SESSION_STATS['nodes_contacted'][node_name]['acked'] += 1
+    
+    SESSION_LOGGER.info(f"[ACK RECEIVED] From: {node_name}, ID: {message_id}, Type: {ack_type}")
+
+def log_session_failure(node_name, message_id, reason='timeout'):
+    """Log a message failure to the session log."""
+    if not SESSION_LOGGER:
+        return
+    
+    SESSION_STATS['messages_failed'] += 1
+    
+    if node_name in SESSION_STATS['nodes_contacted']:
+        SESSION_STATS['nodes_contacted'][node_name]['failed'] += 1
+    
+    SESSION_LOGGER.info(f"[MESSAGE FAILED] To: {node_name}, ID: {message_id}, Reason: {reason}")
+
+def log_session_error(error_message):
+    """Log an error to the session log."""
+    if not SESSION_LOGGER:
+        return
+    
+    SESSION_STATS['errors'].append(f"{datetime.now().strftime('%H:%M:%S')} - {error_message}")
+    SESSION_LOGGER.error(f"[ERROR] {error_message}")
+
+def close_session_logging():
+    """Close the session logging and write final summary."""
+    if not SESSION_LOGGER:
+        return
+    
+    # Write final summary
+    SESSION_LOGGER.info("")
+    SESSION_LOGGER.info("="*80)
+    SESSION_LOGGER.info("SESSION ENDED")
+    SESSION_LOGGER.info(f"End Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    SESSION_LOGGER.info("="*80)
+    
+    save_session_summary()
+    
+    SESSION_LOGGER.info("")
+    SESSION_LOGGER.info("Session log closed.")
+    
+    # Close handlers
+    for handler in SESSION_LOGGER.handlers[:]:
+        handler.close()
+        SESSION_LOGGER.removeHandler(handler)
+    
+    logger.info(f"Session '{SESSION_NAME}' closed. Log saved to: {SESSION_LOG_FILE}")
+    print(f"\n[SESSION] Log saved to: {SESSION_LOG_FILE}")
 
 def load_config():
     """Load configuration from config.ini file."""
@@ -1701,6 +1918,8 @@ def get_target_node_info(target_node_id):
             # Get hops away
             hops = node_info.get('hopsAway', None)
             
+            logger.debug(f"[NODE_INFO] Target {node_hex}: snr={snr}, hops={hops}, nodeInfo keys: {list(node_info.keys())}")
+            
             # Update SNR statistics if we have a node name
             if snr is not None:
                 # Find node name from ID
@@ -1781,26 +2000,78 @@ def init_meshtastic():
         if hasattr(meshtastic_interface, 'myInfo') and meshtastic_interface.myInfo:
             my_node_id = meshtastic_interface.myInfo.my_node_num
             logger.info(f"Connected to Meshtastic device - My Node ID: {my_node_id}")
+            
+            # Check if connected node is in config
+            connected_node_name = None
+            for name, node_id in NODES.items():
+                if node_id == my_node_id:
+                    connected_node_name = name
+                    break
+            
+            if connected_node_name:
+                logger.info(f"✓ Connected device '{connected_node_name}' is in config")
+            else:
+                logger.warning(f"⚠ Connected device (ID: {my_node_id}) is NOT in config!")
+                logger.warning(f"Configured nodes: {NODES}")
+                print(f"\n⚠ WARNING: Connected node {my_node_id} not found in config.ini")
+                print(f"Configured nodes: {NODES}")
         else:
             my_node_id = None
             logger.warning("Could not determine connected device's node ID")
         
-        # Register ACK/NAK callback
+        # Add general packet callback for debugging
+        def debug_packet_callback(packet, interface):
+            """Log ALL incoming packets for debugging."""
+            try:
+                packet_type = "unknown"
+                packet_from = "unknown"
+                
+                if hasattr(packet, 'get'):
+                    packet_type = packet.get('decoded', {}).get('portnum', 'unknown')
+                    packet_from = packet.get('from', 'unknown')
+                elif hasattr(packet, 'decoded'):
+                    if hasattr(packet.decoded, 'portnum'):
+                        packet_type = str(packet.decoded.portnum)
+                    if hasattr(packet, 'from'):
+                        packet_from = packet['from'] if isinstance(packet, dict) else getattr(packet, 'from', 'unknown')
+                
+                ack_logger.debug(f"[PACKET RECEIVED] from: {packet_from}, type: {packet_type}")
+                logger.debug(f"[PACKET RECEIVED] from: {packet_from}, type: {packet_type}, packet: {packet}")
+            except Exception as e:
+                ack_logger.error(f"[PACKET DEBUG ERROR] {e}")
+        
+        # Register general packet callback for debugging
+        def on_receive(packet, interface):
+            debug_packet_callback(packet, interface)
+        
+        meshtastic_interface.onReceive = on_receive
+        logger.info("[DEBUG] General packet callback registered for debugging")
+        ack_logger.info("[DEBUG] General packet callback registered - will log ALL incoming packets")
+        
+        # Subscribe to routing messages via pub/sub for ACK/NAK
         if WANT_ACK:
-            meshtastic_interface.acknowledgmentCallback = ack_tracker.on_ack_nak
-            logger.info("ACK/NAK callback registered (want_ack=on)")
-            print("[ACK] ACK tracking enabled - callback registered")
-            print(f"[ACK] Callback function: {ack_tracker.on_ack_nak}")
+            def on_routing_packet(packet, interface):
+                """Handle routing packets (ACK/NAK) via pub/sub"""
+                ack_logger.info("="*60)
+                ack_logger.info("ROUTING PACKET RECEIVED VIA PUB/SUB")
+                ack_logger.info(f"Packet: {packet}")
+                ack_logger.info("="*60)
+                # Forward to ACK tracker
+                ack_tracker.on_ack_nak(packet)
+            
+            pub.subscribe(on_routing_packet, "meshtastic.receive.routing")
+            logger.info("Subscribed to meshtastic.receive.routing for ACK/NAK tracking")
+            print("[ACK] ACK tracking enabled - subscribed to routing messages")
             ack_logger.info("="*60)
-            ack_logger.info("CALLBACK REGISTERED")
-            ack_logger.info(f"Callback function: {ack_tracker.on_ack_nak}")
+            ack_logger.info("PUB/SUB SUBSCRIPTION REGISTERED")
+            ack_logger.info("Topic: meshtastic.receive.routing")
+            ack_logger.info(f"Callback function: {on_routing_packet}")
             ack_logger.info(f"WANT_ACK: {WANT_ACK}")
-            ack_logger.info(f"Interface: {meshtastic_interface}")
             ack_logger.info("="*60)
         else:
-            logger.info("ACK/NAK callback not registered (want_ack=off)")
+            logger.info("ACK/NAK tracking not enabled (want_ack=off)")
             print("[ACK] ACK tracking disabled (want_ack=off)")
-            ack_logger.warning("CALLBACK NOT REGISTERED - WANT_ACK is off")
+            ack_logger.warning("PUB/SUB NOT REGISTERED - WANT_ACK is off")
         
         logger.info("Meshtastic interface initialized successfully")
         return True
@@ -1871,6 +2142,8 @@ def send_meshtastic_message(message, snr=None):
             try:
                 mode_desc = "direct (no mesh)" if MESH_SEND_MODE == 'direct' else "mesh routing"
                 logger.info(f"Attempting to send message to {name} (ID: {node_id}) via {mode_desc}...")
+                logger.info(f"[SEND] HOP_LIMIT={HOP_LIMIT}, MESH_SEND_MODE={MESH_SEND_MODE}, WANT_ACK={WANT_ACK}")
+                logger.info(f"[SEND] Connected node ID: {my_node_id}, Target node ID: {node_id}")
                 
                 # Get public key if PKI encryption is enabled
                 public_key = None
@@ -1894,7 +2167,8 @@ def send_meshtastic_message(message, snr=None):
                         hopLimit=HOP_LIMIT,
                         channelIndex=CHANNEL_INDEX,
                         pkiEncrypted=use_pki,
-                        publicKey=public_key if use_pki else None
+                        publicKey=public_key if use_pki else None,
+                        onResponse=ack_tracker.on_ack_nak
                     )
                 else:
                     packet = meshtastic_interface.sendData(
@@ -1916,8 +2190,10 @@ def send_meshtastic_message(message, snr=None):
                         ack_tracker.register_message(message_id, name, snr)
                         message_ids[message_id] = name
                         logger.info(f"✓ Message queued for {name} (ID: {node_id}, msg_id: {message_id})")
+                        logger.info(f"[SEND] Packet details - id: {message_id}, hopLimit: {HOP_LIMIT}, wantAck: True")
                         print(f"\n[ACK] Message {message_id} sent to {name}, waiting for ACK...")
-                        print(f"[ACK] Callback registered: {ack_tracker.on_ack_nak}")
+                        print(f"[ACK] Tracking enabled - will notify when ACK/NAK received from mesh")
+                        log_session_message(name, message_id, 'sent')
                         success_count += 1
                     except AttributeError:
                         # Fallback if packet doesn't have id attribute
@@ -2114,6 +2390,23 @@ def run_weather_station():
     logger.info(f"CSV logging to: {LOG_FILE} (retention: {RETENTION_DAYS} days)")
     logger.info("Press 'q' to quit or 'm' for menu\n")
     
+    # Prompt for session name
+    print("\n" + "="*60)
+    print("SESSION NAME")
+    print("="*60)
+    print("Enter a name for this test session")
+    print("(or wait 10 seconds for auto-generated timestamp name):")
+    try:
+        session_name = input_with_timeout("\nSession name: ", timeout=10)
+        if not session_name:
+            session_name = None  # Will auto-generate
+            print("Using auto-generated timestamp name...")
+    except (KeyboardInterrupt, EOFError):
+        session_name = None
+    
+    # Initialize session logging
+    init_session_logging(session_name)
+    
     # Initialize CSV log
     init_csv_log()
     cleanup_old_logs()
@@ -2193,7 +2486,14 @@ def run_weather_station():
                 # Save any remaining CSV data before returning
                 if csv_data_buffer:
                     save_csv_log()
+                # Close session logging
+                close_session_logging()
                 return
+            
+            # Check if we need to auto-save session data
+            current_time = time.time()
+            if SESSION_LOGGER and (current_time - LAST_SESSION_SAVE) >= SESSION_SAVE_INTERVAL:
+                save_session_summary()
             
             logger.debug("Reading sensor...")
             # Read sensor data
