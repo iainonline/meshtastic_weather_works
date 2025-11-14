@@ -805,14 +805,15 @@ def show_main_menu():
     print("4. Reports")
     print("5. View Sample Message")
     print("6. Nodes Seen This Session")
-    print("7. Exit")
+    print("7. Listen to Mesh (Real-time)")
+    print("8. Exit")
     print("\n" + "="*60)
     
     try:
-        choice = input("\nSelect option (1-7): ").strip()
+        choice = input("\nSelect option (1-8): ").strip()
         return choice
     except (KeyboardInterrupt, EOFError):
-        return '6'
+        return '8'
 
 def show_main_menu_with_timeout():
     """Display main menu with 15-second timeout that auto-selects option 1."""
@@ -845,10 +846,11 @@ def show_main_menu_with_timeout():
     print("4. Reports")
     print("5. View Sample Message")
     print("6. Nodes Seen This Session")
-    print("7. Exit")
+    print("7. Listen to Mesh (Real-time)")
+    print("8. Exit")
     print("\n" + "="*60)
     print("\nAuto-starting option 1 in 15 seconds...")
-    print("Select option (1-7) or wait: ", end='', flush=True)
+    print("Select option (1-8) or wait: ", end='', flush=True)
     
     # Use select to wait for input with timeout
     old_settings = termios.tcgetattr(sys.stdin)
@@ -868,14 +870,14 @@ def show_main_menu_with_timeout():
                     print()
                     termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
                     return user_input.strip() if user_input.strip() else '1'
-                elif char in '1234567':
+                elif char in '12345678':
                     user_input = char
                     print(char, flush=True)
             
             # Update countdown every second - print on same line
             if remaining != last_remaining:
                 last_remaining = remaining
-                print(f"\rAuto-starting option 1 in {remaining} seconds...  Select option (1-7) or wait: {user_input}", end='', flush=True)
+                print(f"\rAuto-starting option 1 in {remaining} seconds...  Select option (1-8) or wait: {user_input}", end='', flush=True)
         
         # Timeout - auto-select option 1
         print("\n\n✓ Auto-starting option 1...")
@@ -883,7 +885,7 @@ def show_main_menu_with_timeout():
         return '1'
         
     except (KeyboardInterrupt, EOFError):
-        return '6'
+        return '8'
     finally:
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
@@ -1493,6 +1495,112 @@ def show_nodes_seen_report():
         print(f"\n✗ Error reading log file: {e}")
         input("\nPress Enter to continue...")
 
+def listen_to_mesh_realtime():
+    """Listen to all mesh traffic in real-time and display it."""
+    if not meshtastic_interface:
+        print("\n✗ Meshtastic interface not connected.")
+        input("\nPress Enter to continue...")
+        return
+    
+    print("\n" + "="*80)
+    print("LIVE MESH LISTENER - All Traffic")
+    print("="*80)
+    print("\nPress Ctrl+C to stop listening and return to menu\n")
+    print("-"*80)
+    
+    packet_count = 0
+    start_time = time.time()
+    
+    def on_live_packet(packet, interface):
+        """Callback for live packet display"""
+        nonlocal packet_count
+        packet_count += 1
+        
+        try:
+            # Extract key information
+            from_id = packet.get('fromId', packet.get('from', 'unknown'))
+            to_id = packet.get('toId', packet.get('to', 'unknown'))
+            packet_id = packet.get('id', 'unknown')
+            
+            decoded = packet.get('decoded', {})
+            portnum = decoded.get('portnum', 'UNKNOWN')
+            
+            # Get SNR and hop info
+            snr = packet.get('rxSnr', 'N/A')
+            hop_limit = packet.get('hopLimit', 'N/A')
+            hop_start = packet.get('hopStart', 'N/A')
+            
+            # Calculate hops taken
+            hops = 'N/A'
+            if hop_start != 'N/A' and hop_limit != 'N/A':
+                hops = hop_start - hop_limit
+            
+            timestamp = time.strftime("%H:%M:%S")
+            
+            # Display packet info
+            print(f"\n[{timestamp}] Packet #{packet_count}")
+            print(f"  From: {from_id} → To: {to_id}")
+            print(f"  Type: {portnum} | ID: {packet_id}")
+            print(f"  SNR: {snr} dB | Hops: {hops}/{hop_start}")
+            
+            # Show text messages
+            if portnum == 'TEXT_MESSAGE_APP' and 'text' in decoded:
+                print(f"  📨 Message: {decoded['text']}")
+            
+            # Show routing info (ACK/NAK)
+            if portnum == 'ROUTING_APP' and 'routing' in decoded:
+                routing = decoded['routing']
+                error = routing.get('errorReason', 'NONE')
+                request_id = decoded.get('requestId', 'N/A')
+                if error != 'NONE':
+                    print(f"  ✗ NAK: {error} (for request {request_id})")
+                else:
+                    print(f"  ✓ ACK (for request {request_id})")
+            
+            # Show position updates
+            if portnum == 'POSITION_APP' and 'position' in decoded:
+                pos = decoded['position']
+                if 'latitudeI' in pos and 'longitudeI' in pos:
+                    lat = pos['latitudeI'] / 1e7
+                    lon = pos['longitudeI'] / 1e7
+                    alt = pos.get('altitude', 'N/A')
+                    print(f"  📍 Position: {lat:.4f}, {lon:.4f} @ {alt}m")
+            
+            # Show node info
+            if portnum == 'NODEINFO_APP' and 'user' in decoded:
+                user = decoded['user']
+                longname = user.get('longName', 'Unknown')
+                shortname = user.get('shortName', 'UNK')
+                print(f"  👤 Node: {longname} ({shortname})")
+            
+            print("-"*80)
+            
+        except Exception as e:
+            print(f"  ⚠ Error parsing packet: {e}")
+            print("-"*80)
+    
+    # Subscribe to all mesh messages
+    pub.subscribe(on_live_packet, "meshtastic.receive")
+    
+    try:
+        print(f"Listening started at {time.strftime('%H:%M:%S')}")
+        print("Waiting for packets...\n")
+        
+        # Keep listening until interrupted
+        while True:
+            time.sleep(0.1)
+            
+    except KeyboardInterrupt:
+        # Unsubscribe
+        pub.unsubscribe(on_live_packet, "meshtastic.receive")
+        
+        elapsed = time.time() - start_time
+        print(f"\n\n" + "="*80)
+        print(f"Listening stopped after {int(elapsed)}s")
+        print(f"Total packets received: {packet_count}")
+        print("="*80)
+        input("\nPress Enter to return to menu...")
+
 def show_nodes_seen_this_session():
     """Display nodes seen this session with auto-refresh every 30 seconds."""
     if not meshtastic_interface:
@@ -2050,22 +2158,29 @@ def init_meshtastic():
         
         # Subscribe to routing messages via pub/sub for ACK/NAK
         if WANT_ACK:
-            def on_routing_packet(packet, interface):
-                """Handle routing packets (ACK/NAK) via pub/sub"""
-                ack_logger.info("="*60)
-                ack_logger.info("ROUTING PACKET RECEIVED VIA PUB/SUB")
-                ack_logger.info(f"Packet: {packet}")
-                ack_logger.info("="*60)
-                # Forward to ACK tracker
-                ack_tracker.on_ack_nak(packet)
+            def on_any_packet(packet, interface):
+                """Log ALL incoming packets to debug what's being received"""
+                packet_type = packet.get('decoded', {}).get('portnum', 'unknown') if hasattr(packet, 'get') else 'unknown'
+                from_node = packet.get('from', 'unknown') if hasattr(packet, 'get') else 'unknown'
+                ack_logger.info(f"[PUB/SUB] Packet received - type: {packet_type}, from: {from_node}")
+                
+                # Check if it's a routing packet
+                if packet_type == 'ROUTING_APP' or 'routing' in packet.get('decoded', {}):
+                    ack_logger.info("="*60)
+                    ack_logger.info("ROUTING PACKET RECEIVED VIA PUB/SUB")
+                    ack_logger.info(f"Packet: {packet}")
+                    ack_logger.info("="*60)
+                    # Forward to ACK tracker
+                    ack_tracker.on_ack_nak(packet)
             
-            pub.subscribe(on_routing_packet, "meshtastic.receive.routing")
-            logger.info("Subscribed to meshtastic.receive.routing for ACK/NAK tracking")
-            print("[ACK] ACK tracking enabled - subscribed to routing messages")
+            # Subscribe to all incoming messages to see what we're actually receiving
+            pub.subscribe(on_any_packet, "meshtastic.receive")
+            logger.info("Subscribed to meshtastic.receive (all messages) for ACK/NAK tracking")
+            print("[ACK] ACK tracking enabled - subscribed to all mesh messages")
             ack_logger.info("="*60)
             ack_logger.info("PUB/SUB SUBSCRIPTION REGISTERED")
-            ack_logger.info("Topic: meshtastic.receive.routing")
-            ack_logger.info(f"Callback function: {on_routing_packet}")
+            ack_logger.info("Topic: meshtastic.receive (all messages)")
+            ack_logger.info(f"Callback function: {on_any_packet}")
             ack_logger.info(f"WANT_ACK: {WANT_ACK}")
             ack_logger.info("="*60)
         else:
@@ -2371,11 +2486,14 @@ def main():
             # Nodes seen this session
             show_nodes_seen_this_session()
         elif choice == '7':
+            # Listen to mesh in real-time
+            listen_to_mesh_realtime()
+        elif choice == '8':
             # Exit
             print("\nExiting program...")
             cleanup_and_exit()
         else:
-            print("\nInvalid option. Please select 1-7.")
+            print("\nInvalid option. Please select 1-8.")
 
 def run_weather_station():
     """Run the weather station sensor reading and messaging loop."""
