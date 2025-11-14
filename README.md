@@ -30,6 +30,18 @@ Python project to read temperature and humidity data from a DHT22 sensor connect
 - **ACK confirmation messages** - Sender receives confirmation with timestamp and SNR
 - **Real-time ACK notifications** - See confirmation on screen when ACK arrives
 - **Compact status display** - Shows send time, ACK time, and SNR on sender
+- **Official pub/sub integration** - Uses Meshtastic's official pub/sub system for ACK tracking
+- **Comprehensive ACK debugging** - Detailed logging to `ack_debug.log` for troubleshooting
+
+#### Real-time Mesh Monitoring
+- **Live packet viewer** - Menu option 7 to watch all incoming mesh traffic in real-time
+- **Packet decoding** - Shows from/to, portnum, SNR, hops, and decoded content
+- **Text message display** - Automatically decodes and displays text messages
+- **ACK/NAK detection** - Identifies routing packets (acknowledgements)
+- **Position tracking** - Displays latitude/longitude from position packets
+- **Node info viewer** - Shows nodeinfo updates with long name and hardware model
+- **Encrypted packet detection** - Identifies encrypted packets on different channels
+- **Diagnostic tool** - Essential for troubleshooting mesh connectivity issues
 
 #### PKI Public Key Encryption
 - **End-to-end encryption** - Use recipient's public key instead of shared channel keys
@@ -56,6 +68,7 @@ Python project to read temperature and humidity data from a DHT22 sensor connect
 - **Clean countdown display** - Removed confusing retry messages from console
 - **Status indicators in templates** - {ack} placeholder shows A/U status
 - **Improved error messages** - Better feedback for ACK, PKI, and channel issues
+- **Nodes seen this session** - Menu option 6 shows all nodes detected during runtime
 
 ## Hardware Requirements
 
@@ -285,7 +298,9 @@ The script will display a menu with options to:
 3. Options (change settings)
 4. Reports (view nodes seen)
 5. View Sample Message
-6. Exit
+6. Nodes Seen This Session
+7. Listen to Mesh (Real-time)
+8. Exit
 
 If no selection is made within 15 seconds, option 1 auto-starts.
 
@@ -547,7 +562,9 @@ sudo systemctl disable ws4m    # Disable autostart
 3. **Options** - Configure settings (see Options Menu below)
 4. **Reports** - View statistics and analytics (see Reports Menu below)
 5. **View Sample Message** - Preview message format
-6. **Exit** - Quit the program
+6. **Nodes Seen This Session** - View all nodes detected during this session **(New in v2.0)**
+7. **Listen to Mesh (Real-time)** - Watch live mesh traffic with packet decoding **(New in v2.0)**
+8. **Exit** - Quit the program
 
 ### Options Menu
 
@@ -567,6 +584,54 @@ sudo systemctl disable ws4m    # Disable autostart
 1. **List of Nodes Seen** - View all nodes heard on the mesh with last heard times
 2. **SNR Statistics** - View all-time signal quality analytics **(New in v2.0)**
 3. **Back to Main Menu**
+
+### Real-time Mesh Listener (Menu Option 7)
+
+**New in v2.0** - Watch live mesh traffic for debugging and monitoring.
+
+This diagnostic tool displays all incoming mesh packets in real-time with decoded information:
+
+**Displayed Information:**
+- **From/To nodes** - Sender and recipient IDs
+- **Port type** - Message type (TEXT, POSITION, TELEMETRY, ROUTING, NODEINFO, etc.)
+- **Signal quality** - SNR (Signal-to-Noise Ratio) in dB
+- **Hop count** - Number of mesh hops
+- **Decoded content** - Automatically decodes:
+  - Text messages (content displayed)
+  - ACK/NAK routing packets (acknowledgement status)
+  - Position updates (latitude/longitude)
+  - Node information (long name, hardware model)
+  - Encrypted packets (shows encryption detected)
+
+**Example Output:**
+```
+================================================================================
+                    LISTENING TO MESH (REAL-TIME)
+================================================================================
+Press Ctrl+C to return to main menu
+Packets received: 0
+
+[2025-11-13 17:42:15] Packet #1
+From: !9e757a8c  To: ^all  Port: POSITION_APP  SNR: 5.75 dB  Hops: 0
+  Position: 35.9924, -115.1074, altitude: 823m
+
+[2025-11-13 17:42:23] Packet #2
+From: !9e761374  To: ^all  Port: TELEMETRY_APP  SNR: -- dB  Hops: 0
+  Device telemetry
+
+[2025-11-13 17:42:31] Packet #3
+From: !9e757a8c  To: !9e761374  Port: TEXT_MESSAGE_APP  SNR: 6.0 dB  Hops: 1
+  TEXT: "Hello from the mesh!"
+```
+
+**Use Cases:**
+- **Verify packet reception** - Confirm your node is receiving mesh traffic
+- **Debug ACK issues** - See if ROUTING_APP packets (ACKs) are arriving
+- **Monitor mesh activity** - Watch real-time network traffic
+- **Signal diagnostics** - Check SNR values for different nodes
+- **Troubleshoot connectivity** - Identify if packets are being received at all
+
+**To Exit:** Press `Ctrl+C` to return to the main menu
 
 ## Customization
 
@@ -629,10 +694,30 @@ newnode = 1234567890
 - Check ACK callback is registered: Look for "ACK tracking enabled" at startup
 - Try increasing `ack_wait_time` to 60 seconds for slow mesh networks
 - Verify target node is responding: Check if you receive any ACK callbacks
+- **Use Menu Option 7** (Listen to Mesh) to verify packets are being received at all
+- Check `ack_debug.log` for detailed ACK tracking information
+- Common cause: Target node not sending ACK responses (verify their settings)
+
+**No packets received (New in v2.0):**
+- **Use Menu Option 7** to watch for live mesh traffic
+- If no packets appear, possible causes:
+  - Other nodes out of range
+  - Other nodes powered off
+  - LoRa radio not receiving (hardware issue)
+  - USB connection problem
+  - Wrong channel/frequency configuration
+- Verify with: `meshtastic --nodes` (should show other nodes)
+- Test packet reception with the included `test_reception.py` script
 
 **Messages appearing on LongFast (New in v2.0):**
 - Set `channel_index = 0` in config.ini to use primary channel
 - Restart the program after changing channel setting
+
+**PKI encryption not working:**
+- Verify public keys are correctly entered in config.ini (base64 format)
+- Use Options menu → Scan/Update Public Keys to auto-import
+- Ensure target nodes have PKI enabled: `meshtastic --set security.public_key true`
+- Check that recipient node shows your public key in their node list
 - Verify with another node that messages are on correct channel
 
 **PKI encryption not working (New in v2.0):**
@@ -671,12 +756,21 @@ Requires Meshtastic firmware 2.0+ for full PKI encryption support.
 ## Version History
 
 ### Version 2.0 (November 2025)
+- **Real-time Mesh Monitoring** (NEW)
+  - Menu Option 7: Live packet viewer for all mesh traffic
+  - Decodes text, position, telemetry, nodeinfo, and routing packets
+  - Shows SNR, hops, and packet details in real-time
+  - Essential diagnostic tool for troubleshooting connectivity
+  - Includes test_reception.py script for packet reception verification
+
 - **ACK System Enhancements**
+  - Official pub/sub integration for ACK/NAK tracking
   - Verbose ACK tracking with detailed console output
   - ACK status indicators in messages ({ack} placeholder)
   - Configurable ACK wait time (default 30s for mesh networks)
   - ACK confirmation messages sent back to sender
   - Improved ACK callback registration and error handling
+  - Comprehensive debugging logs in ack_debug.log
   
 - **PKI Encryption Features**
   - Auto-scan and import public keys from mesh nodes
