@@ -111,7 +111,40 @@ The required packages are:
 - `adafruit-circuitpython-dht` - Library for DHT sensors
 - `meshtastic` - Meshtastic Python API for messaging
 
-### 3. Configure Nodes
+### 3. Configure Meshtastic Telemetry (Optional but Recommended)
+
+**NEW**: Included utility script to set telemetry intervals to match weather station updates.
+
+By default, Meshtastic devices send telemetry (battery, voltage, channel utilization) every 30 minutes (1800 seconds). For a weather station that sends updates every 60 seconds, you'll want to match the telemetry interval:
+
+```bash
+# Set both device and environment telemetry to 60 seconds
+python set_telemetry_interval.py 60
+```
+
+This script will:
+- ✅ Show current telemetry intervals
+- ✅ Set device_update_interval to 60 seconds
+- ✅ Set environment_update_interval to 60 seconds  
+- ✅ Verify the changes were applied
+
+**Why match telemetry to weather updates?**
+- Get fresh battery/voltage data with each weather update
+- Better monitoring of device health in real-time
+- More accurate channel utilization metrics
+- Helps diagnose mesh performance issues faster
+
+**Other useful intervals:**
+```bash
+python set_telemetry_interval.py 300   # 5 minutes
+python set_telemetry_interval.py 900   # 15 minutes (good balance)
+python set_telemetry_interval.py 1800  # 30 minutes (default)
+python set_telemetry_interval.py 0     # Disable telemetry
+```
+
+⚠️ **Note**: More frequent telemetry increases battery drain and mesh traffic slightly. For battery-powered deployments, consider 300-900 seconds.
+
+### 4. Configure Nodes
 
 Edit `config.ini` and configure your nodes:
 
@@ -191,6 +224,65 @@ template3 = {date} {time} T:{temp}F\nH: {humidity}%% Signal:{snr} Hops:{hops} {a
 - Works with both channel encryption and PKI encryption
 
 **Default:** `channel_index = 0` (recommended)
+
+## Utility Scripts
+
+### set_telemetry_interval.py
+
+**NEW in v2.0**: Command-line utility to configure Meshtastic telemetry intervals.
+
+Sets both device telemetry and environment telemetry intervals to keep them synchronized with your weather station update frequency.
+
+**Usage:**
+```bash
+source venv/bin/activate
+python set_telemetry_interval.py [seconds]
+```
+
+**Examples:**
+```bash
+python set_telemetry_interval.py          # Sets to 60 seconds (default, recommended)
+python set_telemetry_interval.py 300      # Sets to 5 minutes
+python set_telemetry_interval.py 900      # Sets to 15 minutes
+python set_telemetry_interval.py 0        # Disables telemetry
+```
+
+**Features:**
+- Displays current telemetry settings before making changes
+- Shows exactly what will be changed
+- Verifies changes were applied successfully
+- Clear feedback on success or failure
+- Handles device connection automatically
+
+**When to use:**
+- Initial setup of weather station
+- After changing weather station update_interval in config.ini
+- To optimize battery life vs update frequency balance
+- To reduce mesh traffic on busy networks
+
+### test_reception.py
+
+**NEW in v2.0**: Diagnostic utility to verify packet reception from the mesh.
+
+Tests whether your Meshtastic device is receiving packets from other nodes on the mesh. Essential for troubleshooting connectivity issues.
+
+**Usage:**
+```bash
+source venv/bin/activate
+python test_reception.py
+```
+
+Runs for 60 seconds and displays:
+- All received packets with details
+- Connection status
+- Total nodes in database
+- Packet count and types
+
+**When to use:**
+- Troubleshooting "no ACKs received" issues
+- Verifying mesh connectivity
+- Checking if target nodes are in range
+- Diagnosing packet reception problems
 
 ### Mesh vs Direct Sending
 
@@ -756,6 +848,13 @@ Requires Meshtastic firmware 2.0+ for full PKI encryption support.
 ## Version History
 
 ### Version 2.0 (November 2025)
+- **Utility Scripts** (NEW)
+  - **set_telemetry_interval.py**: Configure device and environment telemetry intervals
+  - Set telemetry to match weather update frequency (recommended: 60 seconds)
+  - Shows current settings and verifies changes
+  - Helps optimize battery vs update frequency balance
+  - **test_reception.py**: Diagnostic tool to verify packet reception from mesh
+
 - **Real-time Mesh Monitoring** (NEW)
   - Menu Option 7: Live packet viewer for all mesh traffic
   - Decodes text, position, telemetry, nodeinfo, and routing packets
